@@ -141,55 +141,53 @@ class Web(object):
                     'command': 'send_text_message',
                     'receiver': receiver,
                     'message': msg,
-                    # @ webwxapp.js /e.ClientMsgId = e.LocalID = e.MsgId = (utilFactory.now() + Math.random().toFixed(3)).replace(".", ""),
-                    'local_id': '{}0{:03}'.format(int(time.time()*1000), random.randint(0, 999)),
                 }))
             except:
                 pass
 
-    def add_friend(self, token, username, message):
+    def add_friend(self, token, user_id, message):
         if token in self.token2ws:
             ws = self.token2ws[token]
             try:
                 ws.send_str(json.dumps({
                     'command': 'add_friend',
-                    'user': username,
+                    'user': user_id,
                     'message': message,
                 }))
             except:
                 pass
 
-    def add_member(self, token, roomname, username):
+    def add_member(self, token, room_id, user_id):
         if token in self.token2ws:
             ws = self.token2ws[token]
             try:
                 ws.send_str(json.dumps({
                     'command': 'add_member',
-                    'room': roomname,
-                    'user': username,
+                    'room': - room_id,
+                    'user': user_id,
                 }))
             except:
                 pass
 
-    def del_member(self, token, roomname, username):
+    def del_member(self, token, room_id, user_id):
         if token in self.token2ws:
             ws = self.token2ws[token]
             try:
                 ws.send_str(json.dumps({
                     'command': 'del_member',
-                    'room': roomname,
-                    'user': username,
+                    'room': - room_id,
+                    'user': user_id,
                 }))
             except:
                 pass
 
-    def mod_topic(self, token, roomname, topic):
+    def mod_topic(self, token, room_id, topic):
         if token in self.token2ws:
             ws = self.token2ws[token]
             try:
                 ws.send_str(json.dumps({
                     'command': 'mod_topic',
-                    'room': roomname,
+                    'room': room_id,
                     'topic': topic,
                 }))
             except:
@@ -384,7 +382,7 @@ class RegisteredCommands:
     @staticmethod
     def summon(client, nick, msg):
         if client.has_telegram_user(nick):
-            Web.instance.add_friend(client.token, client.get_telegram_user(nick).username, msg)
+            Web.instance.add_friend(client.token, client.get_telegram_user(nick).id, msg)
         else:
             client.err_nologin(nick)
 
@@ -460,6 +458,10 @@ class RegisteredCommands:
             client.err_nosuchnick(target)
 
 
+USER_FLAG_SELF = 1<<10
+USER_FLAG_MUTUAL_FRIEND = 1<<12
+
+
 class TelegramCommands:
     @staticmethod
     def add_friend_ack(client, data):
@@ -473,16 +475,20 @@ class TelegramCommands:
 
     @staticmethod
     def contact(client, data):
-        debug({k: v for k, v in data['record'].items() if k in ['UserName', 'DisplayName', 'NickName', 'IsSelf']})
+        debug({k: v for k, v in data['record'].items() if k in ['id', 'username', 'sortName', 'flags']})
         client.ensure_telegram_user(data['record'])
 
     @staticmethod
     def room(client, data):
-        debug({k: v for k, v in data['record'].items() if k in ['UserName', 'DisplayName', 'NickName', 'IsSelf']})
+        debug({k: v for k, v in data['record'].items() if k in ['id', 'title']})
         record = data['record']
         room = client.ensure_telegram_room(record)
-        if isinstance(record.get('MemberList'), list):
-            room.update_members(client, record['MemberList'])
+
+    @staticmethod
+    def room_detail(client, data):
+        record = data['record']
+        room = client.id2telegram_room[record['id']]
+        room.update_members(client, record['participants']['participants'])
 
     @staticmethod
     def message(client, data):
@@ -675,7 +681,7 @@ class StatusChannel(Channel):
     instance = None
 
     def __init__(self, server):
-        super().__init__('+status')
+        super().__init__('+telegram')
         self.server = server
         self.topic = "Your Telegram friends are listed here. Messages wont't be broadcasted to them. Type 'help' to see available commands"
         self.members = set()
@@ -707,10 +713,8 @@ class StatusChannel(Channel):
             self.respond(client, 'new [token]  generate new token or use specified token')
             self.respond(client, 'help         display this help')
         elif msg == 'new':
-            # TODO client.change_token(uuid.uuid1().hex)
-            #self.respond(client, 'new token {} , please paste it to 文件传输助手 on wx.qq.com', client.token)
             client.change_token('0123456789abcdef0123456789abcdef')
-            self.respond(client, 'Please reload wx.qq.com to see your friend list in this channel', client.token)
+            self.respond(client, 'Please reload web.telegram.org to see your friend list in this channel', client.token)
         elif msg == 'status':
             self.respond(client, 'Token: {}', client.token)
             self.respond(client, 'IRC channels:')
@@ -803,22 +807,18 @@ class TelegramRoom(Channel):
     def __init__(self, client, record):
         super().__init__(None)
         self.client = client
-        self.username = record['UserName']
-        self.record = {}
+        self.id = record['id']
         self.idle = True      # no messages yet
         self.joined = False   # `client` has not joined
-        # For large chatrooms, record['MemberList']['Uin'] is very likely
-        # to be 0, so the owner is hard to determine.
-        # If the owner is determined, he/she is the only op
-        self.owner = None
+        self.op = set()
         self.members = set()  # room members excluding `client`, used only for listing
         self.update(client, record)
 
     def update(self, client, record):
-        self.record.update(record)
-        self.topic = record['DisplayName']
+        self.flags = record['flags']
+        self.title = record['title']
         old_name = getattr(self, 'name', None)
-        base = '&' + irc_escape(record['DisplayName'])
+        base = '&' + irc_escape(self.title)
         if base == '&':
             base += '.'.join(member.nick for member in self.members)[:20]
         suffix = ''
@@ -837,29 +837,19 @@ class TelegramRoom(Channel):
                 self.on_join(client)
 
     def update_members(self, client, members):
-        owner_uin = self.record.get('OwnerUin', -1)
-        owner = None
+        self.op.clear()
         seen = set()
         for member in members:
-            user = client.ensure_telegram_user(member, 0)
-            if user:
+            if member['user_id'] in client.id2telegram_user:
+                user = client.id2telegram_user[member['user_id']]
                 seen.add(user)
-                if owner_uin == user.uin:
-                    owner = user
                 if user not in self.members:
                     self.on_join(user)
-            elif owner_uin == client.uin:
-                owner = client
+                if member['_'] == 'channelParticipantEditor':
+                    self.op.add(user)
         for user in self.members - seen:
             self.on_part(user, self.name)
         self.members = seen
-        if self.owner != owner:
-            # deop the old owner
-            if self.owner:
-                self.deop_event(self, self.owner)
-            self.owner = owner
-            if owner:
-                self.op_event(self, owner)
 
     def multicast_group(self, source):
         if not self.joined:
@@ -869,11 +859,11 @@ class TelegramRoom(Channel):
         return (source,)
 
     def n_members(self, client):
-        return len(self.members) + (1 if self.joined else 0)
+        return len(self.members)
 
     def on_notice_or_privmsg(self, client, command, msg):
-        if not client.ctcp(self.username, command, msg):
-            Web.instance.send_text_message(client.token, self.username, msg)
+        if not client.ctcp(- self.id, command, msg):
+            Web.instance.send_text_message(client.token, - self.id, client.at_users(msg))
 
     def on_invite(self, client, nick):
         if client.has_telegram_user(nick):
@@ -883,7 +873,7 @@ class TelegramRoom(Channel):
             elif not user.is_friend:
                 client.err_nosuchnick(nick)
             else:
-                Web.instance.add_member(client.token, self.username, user.username)
+                Web.instance.add_member(client.token, self.id, user.id)
         else:
             client.err_nosuchnick(nick)
 
@@ -904,16 +894,20 @@ class TelegramRoom(Channel):
     def on_kick(self, client, nick, reason):
         if client.has_telegram_user(nick):
             user = client.get_telegram_user(nick)
-            Web.instance.del_member(client.token, self.username, user.username)
+            Web.instance.del_member(client.token, self.id, user.id)
         else:
             client.err_usernotinchannel(nick, self.name)
 
     def on_names(self, client):
-        members = ['@'+u.nick if u == self.owner else u.nick
-                   for u in self.members]
-        members.append('@'+client.nick if client == self.owner else client.nick)
-        client.reply('353 {} = {} :{}', client.nick, self.name,
-                     ' '.join(sorted(members)))
+        members = []
+        for u in self.members:
+            nick = client.nick if u == client.me else u.nick
+            if u in self.op:
+                nick = '@'+nick
+            members.append(nick)
+        if members:
+            client.reply('353 {} = {} :{}', client.nick, self.name,
+                         ' '.join(sorted(members)))
         client.reply('366 {} {} :End of NAMES list', client.nick, self.name)
 
     def on_part(self, member, msg=None):
@@ -935,15 +929,14 @@ class TelegramRoom(Channel):
     def on_topic(self, client, new=None):
         if new:
             if True:  # TODO is owner
-                Web.instance.mod_topic(client.token, self.username, new)
+                Web.instance.mod_topic(client.token, self.id, new)
             else:
                 client.err_nochanmodes()
         else:
             super().on_topic(client, new)
 
     def on_who(self, client):
-        members = tuple(self.members)+(client,)
-        for member in members:
+        for member in self.members:
             member.on_who_member(client, self.name)
 
     def on_websocket_message(self, data):
@@ -955,25 +948,13 @@ class TelegramRoom(Channel):
         if not self.joined:
             return
         for line in msg.splitlines():
-            if data['type'] == 'send':
-                # server generated messages have been filtered by client-side JS
+            sender = self.client.ensure_telegram_user(data['sender'])
+            if sender:
                 self.client.write(':{} PRIVMSG {} :{}'.format(
-                    self.client.prefix, self.name, line))
-            else:
-                # For chatroom events, sender is the same as receiver, e.g. 你邀请xxx加入了群聊
-                if data['sender'] == self.username:
-                    self.client.write(':{} PRIVMSG {} :{}'.format(
-                        self.prefix, self.name, line))
-                else:
-                    sender = self.client.ensure_telegram_user(data['sender'], 0)
-                    if sender:
-                        self.client.write(':{} PRIVMSG {} :{}'.format(
-                            sender.nick, self.name, line))
+                    sender.nick, self.name, line))
 
 
 class Client:
-    USER_FLAG_SELF = 1<<10
-
     def __init__(self, server, reader, writer, options):
         self.server = server
         self.options = Namespace()
@@ -989,10 +970,10 @@ class Client:
         self.mode = ''
         self.channels = {}              # joined, name -> channel
         self.name2telegram_room = {}      # name -> Telegram chatroom
-        self.id2telegram_room = {}  # UserName -> TelegramRoom
+        self.id2telegram_room = {}  # id -> TelegramRoom
         self.nick2telegram_user = {}      # nick -> IRC user or Telegram user (friend or room contact)
-        self.id2telegram_user = {}  # UserName -> TelegramUser
-        self.uin = 0
+        self.id2telegram_user = {}  # id -> TelegramUser
+        self.me = None
         self.token = None
 
     def enter(self, channel):
@@ -1011,6 +992,22 @@ class Client:
     def change_token(self, new):
         return self.server.change_token(self, new)
 
+    def at_users(self, msg):
+        line = ''
+        i = 0
+        while i < len(msg) and msg[i] != ' ':
+            j = msg.find(' ')
+            if j == -1:
+                break
+            s = msg[i:j]
+            if s[-1] == ':':
+                s = s[:-1]
+            if not client.has_telegram_user(s):
+                break
+            line += '@'+client.get_telegram_user(s).name()+' '
+            i = j+1
+        return line + msg[i:]
+
     def has_telegram_user(self, nick):
         return irc_lower(nick) in self.nick2telegram_user
 
@@ -1027,21 +1024,23 @@ class Client:
         del self.nick2telegram_user[irc_lower(nick)]
 
     def ensure_telegram_user(self, record):
+        print('ensure_user', record)
+        if record['id'] == 0:
+            return
         assert isinstance(record['id'], int)
-        assert isinstance(record['username'], str)
+        assert isinstance(record.get('username', ''), str)
         assert isinstance(record['sortName'], str)
         assert isinstance(record['flags'], int)
-        if record['flags'] & USER_FLAG_SELF:
-            self.id = record['id']
-            return None
         if record['id'] in self.id2telegram_user:
             user = self.id2telegram_user[record['id']]
             self.remove_telegram_user(user.nick)
-            user.update(self, record, friend)
+            user.update(self, record)
         else:
             user = TelegramUser(self, record)
-            self.id2telegram_user[user.username] = user
+            self.id2telegram_user[user.id] = user
         self.nick2telegram_user[irc_lower(user.nick)] = user
+        if record['flags'] & USER_FLAG_SELF:
+            self.me = user
         return user
 
     def is_in_channel(self, name):
@@ -1054,16 +1053,24 @@ class Client:
         del self.channels[irc_lower(channelname)]
 
     def ensure_telegram_room(self, record):
-        assert isinstance(record['UserName'], str)
-        assert isinstance(record['DisplayName'], str)
-        assert isinstance(record.get('OwnerUin', -1), int)
-        if record['UserName'] in self.id2telegram_room:
-            room = self.id2telegram_room[record['UserName']]
+        print('ensure_room', record)
+        if record.get('deleted', None):
+            id = - record['id']
+            if id in self.id2telegram_room:
+                channel = self.id2telegram_room[id]
+                if channel.joined:
+                    channel.on_part(self, 'Chat deleted')
+            return
+        assert isinstance(record['id'], int)
+        assert isinstance(record['flags'], int)
+        assert isinstance(record.get('title', ''), str)
+        if record['id'] in self.id2telegram_room:
+            room = self.id2telegram_room[record['id']]
             del self.name2telegram_room[irc_lower(room.name)]
             room.update(self, record)
         else:
             room = TelegramRoom(self, record)
-            self.id2telegram_room[room.username] = room
+            self.id2telegram_room[room.id] = room
             if self.options.join == 'all':
                 self.auto_join(room)
         self.name2telegram_room[irc_lower(room.name)] = room
@@ -1306,7 +1313,7 @@ class Client:
         self.name2telegram_room.clear()
         self.id2telegram_room.clear()
 
-        # instead of flooding +status with massive PART messages,
+        # instead of flooding +telegram with massive PART messages,
         # take the shortcut by rejoining the client
         self.nick2telegram_user.clear()
         self.id2telegram_user.clear()
@@ -1327,13 +1334,17 @@ class TelegramUser:
 
     @property
     def prefix(self):
-        return '{}!{}@Telegram'.format(self.nick, self.username)
+        return '{}!{}@Telegram'.format(self.nick, self.id)
+
+    def name(self):
+        return self.username or self.sortname
 
     def update(self, client, record):
         self.flags = record['flags']
-        self.username = record['username']
+        self.username = record.get('username', '')
+        self.sortname = record['sortName']
         old_nick = getattr(self, 'nick', None)
-        base = self.username
+        base = irc_escape(self.name()) or 'Guest'
         suffix = ''
         while 1:
             nick = base+suffix
@@ -1346,17 +1357,14 @@ class TelegramUser:
             for channel in self.channels:
                 channel.nick_event(self, nick)
             self.nick = nick
-        # friend
-        if friend > 0:
+        if self.flags & USER_FLAG_MUTUAL_FRIEND:
             if not self.is_friend:
                 self.is_friend = True
                 StatusChannel.instance.on_join(self)
-        # non_friend
-        elif friend < 0:
+        else:
             if self.is_friend:
                 self.is_friend = False
                 StatusChannel.instance.on_part(self)
-        # unsure
 
     def enter(self, channel):
         self.channels.add(channel)
@@ -1365,26 +1373,22 @@ class TelegramUser:
         self.channels.remove(channel)
 
     def on_notice_or_privmsg(self, client, command, msg):
-        if not client.ctcp(self.username, command, msg):
-            Web.instance.send_text_message(client.token, self.username, msg)
+        if not client.ctcp(self.id, command, msg):
+            Web.instance.send_text_message(client.token, self.id, client.at_users(msg))
 
     def on_who_member(self, client, channelname):
         client.reply('352 {} {} {} {} {} {} H :0 {}', client.nick, channelname,
-                     self.username, 'Telegram', client.server.name,
-                     self.nick, self.username)
+                     self.id, 'Telegram', client.server.name,
+                     self.nick, self.sortname)
 
     def on_whois(self, client):
         client.reply('311 {} {} {} {} * :{}', client.nick, self.nick,
-                     self.username, 'Telegram', self.record.get('NickName', ''))
+                     self.id, 'Telegram', self.sortname)
 
     def on_websocket_message(self, data):
         msg = data['message']
-        if data['type'] == 'send':
-            self.client.write(':{} PRIVMSG {} :{}'.format(
-                self.client.prefix, self.nick, msg))
-        else:
-            self.client.write(':{} PRIVMSG {} :{}'.format(
-                self.prefix, self.client.nick, msg))
+        self.client.write(':{} PRIVMSG {} :{}'.format(
+            self.prefix, self.client.nick, msg))
 
 
 class Server:
@@ -1499,7 +1503,7 @@ class Server:
 
 
 def main():
-    ap = ArgumentParser(description='telegramircd brings wx.qq.com to IRC clients')
+    ap = ArgumentParser(description='telegramircd brings Telegram to IRC clients')
     ap.add_argument('-d', '--debug', action='store_true', help='run ipdb on uncaught exception')
     ap.add_argument('-i', '--ignore', nargs='*',
                     help='list of ignored regex, do not auto join to a Telegram chatroom whose name matches')

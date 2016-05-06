@@ -44,14 +44,16 @@ function MyWebSocket(url) {
     this.open(false)
 }
 
-var ws = new MyWebSocket('wss://127.0.0.1:9002')
+const USER_FLAG_SELF = 1 << 10
+
+var ws = new MyWebSocket('wss://127.0.0.1:9003')
 var token = '0123456789abcdef0123456789abcdef'
 var deliveredContact = new Map()
-var deliveredRoomContact = new Map()
+var deliveredChatFull = new Map()
 
 function telegramircd_reset() {
     deliveredContact.clear()
-    deliveredRoomContact.clear()
+    deliveredChatFull.clear()
 }
 
 function send_contact(command, record) {
@@ -69,10 +71,10 @@ function clean_record(record) {
 // https://github.com/telegramdesktop/tdesktop/blob/master/Telegram/SourceFiles/mtproto/scheme.tl
 // 同步通讯录
 setInterval(() => {
-    return
     try {
         var injector = angular.element(document).injector()
-        var AppMessagesManager = injector.get('AppMessagesManager')
+        var AppChatsManager = injector.get('AppChatsManager')
+        var AppProfileManager = injector.get('AppProfileManager')
         var AppUsersManager = injector.get('AppUsersManager')
         var contactsList = AppUsersManager.getContactsList()
 
@@ -87,10 +89,19 @@ setInterval(() => {
         contactsList = AppChatsManager.getChats()
         for (var id in contactsList) {
             var x = contactsList[id]
-            id = - id
             if (! x.migrated_to && ! deliveredContact.has(id) || JSON.stringify(x) != JSON.stringify(deliveredContact.get(id))) {
+                AppProfileManager.getChatFull(id)
                 ws.send({token: token, command: 'room', record: clean_record(x)})
                 deliveredContact.set(id, Object.assign({}, x))
+            }
+        }
+
+        var chatsFull = AppProfileManager.getChatsFull()
+        for (var id in chatsFull) {
+            var x = chatsFull[id]
+            if (! deliveredChatFull.has(id) || JSON.stringify(x) != JSON.stringify(deliveredChatFull.get(id))) {
+                ws.send({token: token, command: 'room_detail', record: x})
+                deliveredChatFull.set(id, Object.assign({}, x))
             }
         }
     } catch (ex) {
@@ -105,11 +116,26 @@ ws.onmessage = data => {
         data = JSON.parse(data.detail)
         switch (data.command) {
         case 'send_file':
+            var injector = angular.element(document).injector()
+            var AppMessagesManager = injector.get('AppMessagesManager')
+            var mime = 'application/octet-stream'
+            if (data.filename.endsWith('.bmp'))
+                mime = 'image/bmp'
+            else if (data.filename.endsWith('.gif'))
+                mime = 'image/gif'
+            else if (data.filename.endsWith('.png'))
+                mime = 'image/png'
+            else if (/\.jpe?g/.test(data.filename))
+                mime = 'image/jpeg'
+            var body = new Uint8Array(data.body.length)
+            for (var i = 0; i < data.body.length; i++)
+                body[i] = data.body.charCodeAt(i)
+            AppMessagesManager.sendFile(data.receiver, new File([body], data.filename), {})
             break
         case 'send_text_message':
             var injector = angular.element(document).injector()
             var AppMessagesManager = injector.get('AppMessagesManager')
-            AppMessagesManager.sendText(data.receiver, data.message, {})
+            AppMessagesManager.sendText(data.receiver, data.message, {replyToMsgID: undefined})
             break
         }
     } catch (ex) {
@@ -40636,6 +40662,9 @@ angular.module("myApp.services", ["myApp.i18n", "izhukov.utils"]).service("AppUs
         }
     }),
     {
+        //@ PATCH
+        getChatsFull: () => v,
+
         getPeerBots: p,
         getProfile: u,
         getChatInviteLink: g,
@@ -48491,10 +48520,13 @@ angular.module("myApp.services").service("AppMessagesManager", ["$q", "$rootScop
             if (token) {
                 // l: AppChatsManager
                 // r: AppUsersManager
-                if (u.to_id._ === 'peerChannel')
-                    ws.send({token: token, command: 'room_message', sender: r.getUser(u.from_id), receiver: l.getChat(- s), message: u})
-                else
-                    ws.send({token: token, command: 'message', sender: r.getUser(u.from_id), receiver: l.getChat(- s), message: u})
+                var sender = r.getUser(u.from_id)
+                if (! (sender.flags & USER_FLAG_SELF)) {
+                    var message = u.message
+                    if (u.media && u.media.document)
+                        message = `https://web.telegram.org/temporary/${u.media.document.file_name}`
+                    ws.send({token: token, command: u.to_id._ === 'peerUser' ? 'message' : 'room_message', sender: clean_record(sender), receiver: clean_record(l.getChat(- s)), message: message})
+                }
             }
 
 

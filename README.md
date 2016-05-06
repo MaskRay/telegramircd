@@ -1,42 +1,45 @@
-# send
+# telegramircd
 
-47354
+telegramircd类似于bitlbee，在web.telegram.org和IRC间建起桥梁，可以使用IRC客户端收发朋友、群消息。
 
-inj.get('AppMessagesManager').sendText(-144751880, 'xxxxx', {})
+## 原理
 
-# user
+修改<https://web.telegram.org>用的JS，通过WebSocket把信息发送到服务端，服务端兼做IRC服务端，把IRC客户端的命令通过WebSocket传送到网页版JS执行。未实现IRC客户端，因此无法把群的消息转发到另一个IRC服务器(打通两个群的bot)。
 
-{
-  "_": "user",
-  "pFlags": {
-    "bot": true,
-    "bot_chat_history": true
-  },
-  "flags": 49195,
-  "id": 200722872,
-  "access_hash": "1047941406486188700",
-  "first_name": "可信睡眠机器人",
-  "username": "TrustedSleepBot",
-  "photo": {
-    "_": "userProfilePhoto",
-    "photo_id": "862098171255433129",
-    "photo_small": {
-      "_": "fileLocation",
-      "dc_id": 5,
-      "volume_id": "851322117",
-      "local_id": 145451,
-      "secret": "9125325018561518136"
-    },
-    "photo_big": {
-      "_": "fileLocation",
-      "dc_id": 5,
-      "volume_id": "851322117",
-      "local_id": 145453,
-      "secret": "3947383152104919647"
-    }
-  },
-  "bot_info_version": 6,
-  "num": 1,
-  "rFirstName": {},
-  "rFullName": {},
-  "sortName": "可信睡眠机器人",
+## 安装
+
+需要Python 3.5或以上，支持`async/await`语法
+`pip install -r requirements.txt`安装依赖
+
+### Arch Linux
+
+安装<https://aur.archlinux.org/packages/telegramircd-git>，会自动在`/etc/telegramircd/`下生成自签名证书(见下文)，导入浏览器即可。
+
+### 其他发行版
+
+- `openssl req -newkey rsa:2048 -nodes -keyout key.pem -x509 -out cert.pem -subj '/CN=127.0.0.1' -dates 9999`创建密钥与证书。
+- Chrome访问`chrome://settings/certificates`，导入cert.pem，在Authorities标签页选择该证书，Edit->Trust this certificate for identifying websites.
+- Chrome安装Switcheroo Redirector扩展，把<https://web.telegram.org/js/app.js>重定向至<https://127.0.0.1:9003/app.js>。
+- `./telegramircd.py --tls-cert cert.pem --tls-key key.pem`，会监听127.1:6669的IRC和127.1:9003的HTTPS(兼WebSocket over TLS)
+
+## IRC客户端
+
+- IRC客户端连接127.1:6669
+- 刷新<https://web.telegram.org>页面
+- 回到IRC客户端，会发现自动加入了`+telegram` channel
+
+在`+telegram`发信并不会群发，只是为了方便查看有哪些朋友。
+
+## IRC命令
+
+telegramircd是个简单的IRC服务器，可以执行通常的IRC命令，可以对其他客户端私聊，创建standard channel(以`#`开头的channel)。另外若用token与某个微信网页版连接的，就能看到微信联系人(朋友、群联系人)显示为特殊nick、群显示为特殊channel(以`&`开头，根据群名自动设置名称)
+
+这些特殊nick与channel只有当前客户端能看到，因此一个服务端支持多个微信帐号同时登录，每个用不同的IRC客户端控制。另外，以下命令会有特殊作用：
+
+- 程序默认选项为`--join auto`，收到某个群的第一条消息后会自动加入对应的channel，即开始接收该群的消息。
+- `/dcc send nick/channel filename`，给mutual friend或群发图片/文件。参见<https://en.wikipedia.org/wiki/Direct_Client-to-Client#DCC_SEND>
+- `/list`，列出所有群
+- `/names`，更新当前群成员列表
+- `/part [channel]`的IRC原义为离开channel，转换为微信代表在当前IRC会话中不再接收该群的消息。不用担心，telegramircd并没有主动退出群的功能
+- `/query nick`打开与`$nick`的私聊窗口，与之私聊即为在微信上和他/她/它对话
+- `/who channel`，查看群成员列表
