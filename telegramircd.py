@@ -475,20 +475,20 @@ class TelegramCommands:
 
     @staticmethod
     def contact(client, data):
-        debug({k: v for k, v in data['record'].items() if k in ['id', 'username', 'sortName', 'flags']})
+        debug('contact %r', {k: v for k, v in data['record'].items() if k in ['id', 'username', 'sortName', 'flags']})
         client.ensure_telegram_user(data['record'])
 
     @staticmethod
     def room(client, data):
-        debug({k: v for k, v in data['record'].items() if k in ['id', 'title']})
+        debug('room %r', {k: v for k, v in data['record'].items() if k in ['id', 'title']})
         record = data['record']
         room = client.ensure_telegram_room(record)
 
     @staticmethod
     def room_detail(client, data):
         record = data['record']
-        room = client.id2telegram_room[record['id']]
-        room.update_members(client, record['participants']['participants'])
+        if record['id'] in client.id2telegram_room:
+            client.id2telegram_room[record['id']].update_detail(client, record)
 
     @staticmethod
     def message(client, data):
@@ -598,7 +598,7 @@ class Channel:
 
     def on_topic(self, client, new=None):
         if new:
-            client.err_nochanmodes()
+            client.err_nochanmodes(self.name)
         else:
             if self.topic:
                 client.reply('332 {} {} :{}', client.nick, self.name, self.topic)
@@ -836,20 +836,27 @@ class TelegramRoom(Channel):
             if joined:
                 self.on_join(client)
 
-    def update_members(self, client, members):
-        self.op.clear()
-        seen = set()
-        for member in members:
-            if member['user_id'] in client.id2telegram_user:
-                user = client.id2telegram_user[member['user_id']]
-                seen.add(user)
-                if user not in self.members:
-                    self.on_join(user)
-                if member['_'] == 'channelParticipantEditor':
-                    self.op.add(user)
-        for user in self.members - seen:
-            self.on_part(user, self.name)
-        self.members = seen
+    def update_detail(self, client, record):
+        debug('update_detail %r', record)
+        if 'about' in record:
+            new = record['about'].replace('\n', '\\n')
+            if self.topic != new:
+                self.topic = new
+                client.reply('332 {} {} :{}', client.nick, self.name, self.topic)
+        if 'participants' in record:
+            self.op.clear()
+            seen = set()
+            for member in record['participants']['participants']:
+                if member['user_id'] in client.id2telegram_user:
+                    user = client.id2telegram_user[member['user_id']]
+                    seen.add(user)
+                    if user not in self.members:
+                        self.on_join(user)
+                    if member['_'] == 'channelParticipantEditor':
+                        self.op.add(user)
+            for user in self.members - seen:
+                self.on_part(user, self.name)
+            self.members = seen
 
     def multicast_group(self, source):
         if not self.joined:
@@ -931,7 +938,7 @@ class TelegramRoom(Channel):
             if True:  # TODO is owner
                 Web.instance.mod_topic(client.token, self.id, new)
             else:
-                client.err_nochanmodes()
+                client.err_nochanmodes(self.name)
         else:
             super().on_topic(client, new)
 
@@ -996,15 +1003,15 @@ class Client:
         line = ''
         i = 0
         while i < len(msg) and msg[i] != ' ':
-            j = msg.find(' ')
+            j = msg.find(' ', i)
             if j == -1:
                 break
             s = msg[i:j]
             if s[-1] == ':':
                 s = s[:-1]
-            if not client.has_telegram_user(s):
+            if not self.has_telegram_user(s):
                 break
-            line += '@'+client.get_telegram_user(s).name()+' '
+            line += '@'+self.get_telegram_user(s).name()+' '
             i = j+1
         return line + msg[i:]
 
@@ -1024,7 +1031,7 @@ class Client:
         del self.nick2telegram_user[irc_lower(nick)]
 
     def ensure_telegram_user(self, record):
-        print('ensure_user', record)
+        debug('ensure_telegram_user %r', record)
         if record['id'] == 0:
             return
         assert isinstance(record['id'], int)
@@ -1053,7 +1060,7 @@ class Client:
         del self.channels[irc_lower(channelname)]
 
     def ensure_telegram_room(self, record):
-        print('ensure_room', record)
+        debug('ensure_telegram_room %r', record)
         if record.get('deleted', None):
             id = - record['id']
             if id in self.id2telegram_room:
@@ -1527,7 +1534,7 @@ def main():
     try:
         with open('/dev/tty'):
             pass
-        logging.basicConfig(format='%(asctime)s:%(levelname)s: %(message)s')
+        logging.basicConfig(format='%(levelname)s: %(message)s')
     except OSError:
         logging.root.addHandler(logging.handlers.SysLogHandler('/dev/log'))
     logging.root.setLevel(options.loglevel or logging.INFO)
