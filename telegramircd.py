@@ -956,10 +956,11 @@ class TelegramRoom(Channel):
             return
         for line in msg.splitlines():
             sender = self.client.ensure_telegram_user(data['sender'])
-            if sender:
-                self.client.write(':{} PRIVMSG {} :{}'.format(
-                    self.client.prefix if self.client.me == sender else sender.prefix,
-                    self.name, line))
+            if sender not in self.members:
+                self.on_join(sender)
+            self.client.write(':{} PRIVMSG {} :{}'.format(
+                self.client.prefix if self.client.me == sender else sender.prefix,
+                self.name, line))
 
 
 class Client:
@@ -1395,8 +1396,9 @@ class TelegramUser:
 
     def on_websocket_message(self, data):
         msg = data['message']
-        self.client.write(':{} PRIVMSG {} :{}'.format(
-            self.prefix, self.client.nick, msg))
+        for line in msg.splitlines():
+            self.client.write(':{} PRIVMSG {} :{}'.format(
+                self.prefix, self.client.nick, line))
 
 
 class Server:

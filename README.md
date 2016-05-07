@@ -52,3 +52,7 @@ telegramircd是个简单的IRC服务器，可以执行通常的IRC命令，可�
 vte终端模拟器支持URL选择，但不能识别`filesystem:https://`。我修改的`aur/vte3-ng-fullwidth-emoji`添加了该类URL支持。
 
 termite `C-S-Space` URL选择也不支持，可以用<https://gist.github.com/MaskRay/9e1c57642bedd8b2b965e39b2d58fc82>添加该类URL支持。感谢张酉夫的ELF hack指导。
+
+## 已知问题
+
+- supergroup和普通chat的message格式不同，不含`random_id`字段，没法判断该消息是否由IRC客户端生成的。

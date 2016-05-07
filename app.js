@@ -129,16 +129,17 @@ setInterval(() => {
         }
 
         contactsList = AppChatsManager.getChats()
+        var chatsFull = AppProfileManager.getChatsFull()
         for (var id in contactsList) {
             var x = contactsList[id]
-            if (! x.migrated_to && ! deliveredContact.has(id) || JSON.stringify(x) != JSON.stringify(deliveredContact.get(id))) {
+            if (! (id in chatsFull))
                 AppProfileManager.getChatFull(id)
+            if (! x.migrated_to && ! deliveredContact.has(id) || JSON.stringify(x) != JSON.stringify(deliveredContact.get(id))) {
                 ws.send({token: token, command: 'room', record: clean_record(x)})
                 deliveredContact.set(id, Object.assign({}, x))
             }
         }
 
-        var chatsFull = AppProfileManager.getChatsFull()
         for (var id in chatsFull) {
             var x = chatsFull[id]
             if (! deliveredChatFull.has(id) || JSON.stringify(x) != JSON.stringify(deliveredChatFull.get(id))) {
@@ -48582,12 +48583,17 @@ angular.module("myApp.services").service("AppMessagesManager", ["$q", "$rootScop
 
                 if (u.media && u.media._ !== 'messageMediaEmpty') {
                     if (u.media.document) {
-                        var doc = u.media.document, filename = 'file'
-                        for (var attr in doc.attributes)
+                        var type = 'doc', doc = u.media.document, filename = 'file', sticker = 'sticker'
+                        for (var attr of doc.attributes)
                             if (attr._ === 'documentAttributeFilename')
                                 filename = attr.file_name
+                            else if (attr._ === 'documentAttributeSticker') {
+                                type = 'sticker'
+                                if (attr.alt)
+                                    sticker = attr.alt
+                            }
                         telegramircd_get_doc_url(doc).then(url => {
-                            data.message = `[Doc] ${filename} ${url}`
+                            data.message = `[${type}] ${type === "sticker" ? sticker : filename} ${url}`
                             ws.send(data)
                         })
                     } else if (u.media.photo)
@@ -48595,8 +48601,10 @@ angular.module("myApp.services").service("AppMessagesManager", ["$q", "$rootScop
                             data.message = `[Photo] ${url}`
                             ws.send(data)
                         })
-                } else if (! (sender.flags & USER_FLAG_SELF) || ! sentRandomID.has(u.random_id))
-                    ws.send(data)
+                } else if (! (sender.flags & USER_FLAG_SELF) || (u.random_id && ! sentRandomID.has(u.random_id)))
+                    // check whether the message is generated from the IRC client for normal groups
+                    // supergroups do not have the 'random_id' field
+                    data.message && ws.send(data)
             }
 
 
