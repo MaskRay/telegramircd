@@ -48,16 +48,58 @@ const USER_FLAG_SELF = 1 << 10
 
 var ws = new MyWebSocket('wss://127.0.0.1:9003')
 var token = '0123456789abcdef0123456789abcdef'
+var sentRandomID = new Set()
 var deliveredContact = new Map()
 var deliveredChatFull = new Map()
 
 function telegramircd_reset() {
+    sentRandomID.clear()
     deliveredContact.clear()
     deliveredChatFull.clear()
 }
 
-function send_contact(command, record) {
-    ws.send({token: token, command: command, record: y})
+function telegramircd_get_photo_url(photo) {
+    var injector = angular.element(document).injector()
+    var MtpApiFileManager = injector.get('MtpApiFileManager')
+    var AppPhotosManager = injector.get('AppPhotosManager')
+    var mime = 'image/jpeg',
+        fullWidth = Math.max(screen.width || 0, 800),
+        fullHeight = Math.max(screen.height || 0, 800),
+        fullPhotoSize = AppPhotosManager.choosePhotoSize(photo, fullWidth, fullHeight),
+        inputFileLocation = {
+          _: 'inputFileLocation',
+          volume_id: fullPhotoSize.location.volume_id,
+          local_id: fullPhotoSize.location.local_id,
+          secret: fullPhotoSize.location.secret
+        };
+    var entry = MtpApiFileManager.getCachedFile(inputFileLocation);
+    if (entry)
+        return Promise.resolve(entry.toURL())
+    return MtpApiFileManager.downloadFile(fullPhotoSize.location.dc_id, inputFileLocation, fullPhotoSize.size, mime
+    ).then(entry => entry.toURL())
+}
+
+function getFileName(doc) {
+    if (doc.file_name) {
+        return doc.file_name;
+    }
+    var fileExt = '.' + doc.mime_type.split('/')[1];
+    if (fileExt == '.octet-stream') {
+        fileExt = '';
+    }
+    return 't_' + (doc.type || 'file') + doc.id + fileExt;
+}
+
+function telegramircd_get_doc_url(doc) {
+    var injector = angular.element(document).injector()
+    var MtpApiFileManager = injector.get('MtpApiFileManager')
+    var inputFileLocation = {
+        _: 'inputDocumentFileLocation',
+        id: doc.id,
+        access_hash: doc.access_hash,
+        file_name: getFileName(doc)
+    }
+    return MtpApiFileManager.downloadFile(doc.dc_id, inputFileLocation, doc.size, doc.mime_type || 'application/octet-stream').then(entry => entry.toURL())
 }
 
 function clean_record(record) {
@@ -119,7 +161,9 @@ ws.onmessage = data => {
             var injector = angular.element(document).injector()
             var AppMessagesManager = injector.get('AppMessagesManager')
             var mime = 'application/octet-stream'
-            if (data.filename.endsWith('.bmp'))
+            if (data.filename.endsWith('.txt'))
+                mime = 'text/plain'
+            else if (data.filename.endsWith('.bmp'))
                 mime = 'image/bmp'
             else if (data.filename.endsWith('.gif'))
                 mime = 'image/gif'
@@ -130,12 +174,17 @@ ws.onmessage = data => {
             var body = new Uint8Array(data.body.length)
             for (var i = 0; i < data.body.length; i++)
                 body[i] = data.body.charCodeAt(i)
-            AppMessagesManager.sendFile(data.receiver, new File([body], data.filename), {})
+            AppMessagesManager.sendFile(data.receiver, new File([body], data.filename, {type: mime}), {isMedia: true})
             break
         case 'send_text_message':
             var injector = angular.element(document).injector()
             var AppMessagesManager = injector.get('AppMessagesManager')
-            AppMessagesManager.sendText(data.receiver, data.message, {replyToMsgID: undefined})
+            try {
+                window.telegramircd_irc = true
+                AppMessagesManager.sendText(data.receiver, data.message, {replyToMsgID: undefined})
+            } finally {
+                window.telegramircd_irc = false
+            }
             break
         }
     } catch (ex) {
@@ -40002,7 +40051,6 @@ angular.module("myApp.services", ["myApp.i18n", "izhukov.utils"]).service("AppUs
             }
         }
     }
-
     var R, N, U, O = {}, B = {}, L = {}, j = {}, q = SearchIndexManager.createIndex(), H = 0;
     return l.get("server_time_offset").then(function(e) {
         e && (H = e)
@@ -47524,6 +47572,10 @@ angular.module("myApp.services").service("AppMessagesManager", ["$q", "$rootScop
             m.unread = !0)),
             h && (p |= 8),
             y ? w = 0 : p |= 256,
+
+            //@ PATCH
+            window.telegramircd_irc && sentRandomID.add(d)
+
             i = {
                 _: "message",
                 id: o,
@@ -48520,13 +48572,31 @@ angular.module("myApp.services").service("AppMessagesManager", ["$q", "$rootScop
             if (token) {
                 // l: AppChatsManager
                 // r: AppUsersManager
-                var sender = r.getUser(u.from_id)
-                if (! (sender.flags & USER_FLAG_SELF)) {
-                    var message = u.message
-                    if (u.media && u.media.document)
-                        message = `https://web.telegram.org/temporary/${u.media.document.file_name}`
-                    ws.send({token: token, command: u.to_id._ === 'peerUser' ? 'message' : 'room_message', sender: clean_record(sender), receiver: clean_record(l.getChat(- s)), message: message})
+                var sender = r.getUser(u.from_id), data = {
+                    token: token,
+                    command: u.to_id._ === 'peerUser' ? 'message' : 'room_message',
+                    sender: clean_record(sender),
+                    receiver: clean_record(l.getChat(- s)),
+                    message: u.message
                 }
+
+                if (u.media && u.media._ !== 'messageMediaEmpty') {
+                    if (u.media.document) {
+                        var doc = u.media.document, filename = 'file'
+                        for (var attr in doc.attributes)
+                            if (attr._ === 'documentAttributeFilename')
+                                filename = attr.file_name
+                        telegramircd_get_doc_url(doc).then(url => {
+                            data.message = `[Doc] ${filename} ${url}`
+                            ws.send(data)
+                        })
+                    } else if (u.media.photo)
+                        telegramircd_get_photo_url(u.media.photo).then(url => {
+                            data.message = `[Photo] ${url}`
+                            ws.send(data)
+                        })
+                } else if (! (sender.flags & USER_FLAG_SELF) || ! sentRandomID.has(u.random_id))
+                    ws.send(data)
             }
 
 

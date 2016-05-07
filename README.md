@@ -43,3 +43,12 @@ telegramircd是个简单的IRC服务器，可以执行通常的IRC命令，可�
 - `/part [channel]`的IRC原义为离开channel，转换为微信代表在当前IRC会话中不再接收该群的消息。不用担心，telegramircd并没有主动退出群的功能
 - `/query nick`打开与`$nick`的私聊窗口，与之私聊即为在微信上和他/她/它对话
 - `/who channel`，查看群成员列表
+
+## 显示
+
+- `[Doc] $filename filesystem:https://web.telegram.org/temporary/t_filexxxxxxxxxxxxxxx`
+- `[Photo] filesystem:https://web.telegram.org/temporary/xxxxxxxxxxx`。图片(照片)
+
+vte终端模拟器支持URL选择，但不能识别`filesystem:https://`。我修改的`aur/vte3-ng-fullwidth-emoji`添加了该类URL支持。
+
+termite `C-S-Space` URL选择也不支持，可以用<https://gist.github.com/MaskRay/9e1c57642bedd8b2b965e39b2d58fc82>添加该类URL支持。感谢张酉夫的ELF hack指导。

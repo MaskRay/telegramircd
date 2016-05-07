@@ -958,7 +958,8 @@ class TelegramRoom(Channel):
             sender = self.client.ensure_telegram_user(data['sender'])
             if sender:
                 self.client.write(':{} PRIVMSG {} :{}'.format(
-                    sender.nick, self.name, line))
+                    self.client.prefix if self.client.me == sender else sender.prefix,
+                    self.name, line))
 
 
 class Client:
