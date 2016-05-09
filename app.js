@@ -47,7 +47,6 @@ function MyWebSocket(url) {
 const USER_FLAG_SELF = 1 << 10
 
 var ws = new MyWebSocket('wss://127.0.0.1:9003')
-var token = '0123456789abcdef0123456789abcdef'
 var sentRandomID = new Set()
 var deliveredContact = new Map()
 var deliveredChatFull = new Map()
@@ -123,7 +122,7 @@ setInterval(() => {
         for (var id in contactsList) {
             var x = contactsList[id]
             if (! deliveredContact.has(id) || JSON.stringify(x) != JSON.stringify(deliveredContact.get(id))) {
-                ws.send({token: token, command: 'contact', record: clean_record(x)})
+                ws.send({command: 'contact', record: clean_record(x)})
                 deliveredContact.set(id, Object.assign({}, x))
             }
         }
@@ -135,7 +134,7 @@ setInterval(() => {
             if (! (id in chatsFull))
                 AppProfileManager.getChatFull(id)
             if (! x.migrated_to && ! deliveredContact.has(id) || JSON.stringify(x) != JSON.stringify(deliveredContact.get(id))) {
-                ws.send({token: token, command: 'room', record: clean_record(x)})
+                ws.send({command: 'room', record: clean_record(x)})
                 deliveredContact.set(id, Object.assign({}, x))
             }
         }
@@ -143,7 +142,7 @@ setInterval(() => {
         for (var id in chatsFull) {
             var x = chatsFull[id]
             if (! deliveredChatFull.has(id) || JSON.stringify(x) != JSON.stringify(deliveredChatFull.get(id))) {
-                ws.send({token: token, command: 'room_detail', record: x})
+                ws.send({command: 'room_detail', record: x})
                 deliveredChatFull.set(id, Object.assign({}, x))
             }
         }
@@ -158,6 +157,10 @@ ws.onmessage = data => {
     try {
         data = JSON.parse(data.detail)
         switch (data.command) {
+        case 'close':
+            ws.close()
+            ws.open(false)
+            break
         case 'send_file':
             var injector = angular.element(document).injector()
             var AppMessagesManager = injector.get('AppMessagesManager')
@@ -48570,42 +48573,39 @@ angular.module("myApp.services").service("AppMessagesManager", ["$q", "$rootScop
               , p = $e[s];
 
             //@ PATCH
-            if (token) {
-                // l: AppChatsManager
-                // r: AppUsersManager
-                var sender = r.getUser(u.from_id), data = {
-                    token: token,
-                    command: u.to_id._ === 'peerUser' ? 'message' : 'room_message',
-                    sender: clean_record(sender),
-                    receiver: clean_record(l.getChat(- s)),
-                    message: u.message
-                }
-
-                if (u.media && u.media._ !== 'messageMediaEmpty') {
-                    if (u.media.document) {
-                        var type = 'doc', doc = u.media.document, filename = 'file', sticker = 'sticker'
-                        for (var attr of doc.attributes)
-                            if (attr._ === 'documentAttributeFilename')
-                                filename = attr.file_name
-                            else if (attr._ === 'documentAttributeSticker') {
-                                type = 'sticker'
-                                if (attr.alt)
-                                    sticker = attr.alt
-                            }
-                        telegramircd_get_doc_url(doc).then(url => {
-                            data.message = `[${type}] ${type === "sticker" ? sticker : filename} ${url}`
-                            ws.send(data)
-                        })
-                    } else if (u.media.photo)
-                        telegramircd_get_photo_url(u.media.photo).then(url => {
-                            data.message = `[Photo] ${url}`
-                            ws.send(data)
-                        })
-                } else if (! (sender.flags & USER_FLAG_SELF) || (u.random_id && ! sentRandomID.has(u.random_id)))
-                    // check whether the message is generated from the IRC client for normal groups
-                    // supergroups do not have the 'random_id' field
-                    data.message && ws.send(data)
+            // l: AppChatsManager
+            // r: AppUsersManager
+            var sender = r.getUser(u.from_id), data = {
+                command: u.to_id._ === 'peerUser' ? 'message' : 'room_message',
+                sender: clean_record(sender),
+                receiver: clean_record(l.getChat(- s)),
+                message: u.message
             }
+
+            if (u.media && u.media._ !== 'messageMediaEmpty') {
+                if (u.media.document) {
+                    var type = 'Doc', doc = u.media.document, filename = 'file', sticker = 'Sticker'
+                    for (var attr of doc.attributes)
+                        if (attr._ === 'documentAttributeFilename')
+                            filename = attr.file_name
+                        else if (attr._ === 'documentAttributeSticker') {
+                            type = 'Sticker'
+                            if (attr.alt)
+                                sticker = attr.alt
+                        }
+                    telegramircd_get_doc_url(doc).then(url => {
+                        data.message = `[${type}] ${type === "Sticker" ? sticker : filename} ${url}`
+                        ws.send(data)
+                    })
+                } else if (u.media.photo)
+                    telegramircd_get_photo_url(u.media.photo).then(url => {
+                        data.message = `[Photo] ${url}`
+                        ws.send(data)
+                    })
+            } else if (! (sender.flags & USER_FLAG_SELF) || (u.random_id && ! sentRandomID.has(u.random_id)))
+                // check whether the message is generated from the IRC client for normal groups
+                // supergroups do not have the 'random_id' field
+                data.message && ws.send(data)
 
 
             if ("updateNewChannelMessage" == n._) {

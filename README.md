@@ -22,11 +22,10 @@ telegramircd类似于bitlbee，在web.telegram.org和IRC间建起桥梁，可以
 - Chrome安装Switcheroo Redirector扩展，把<https://web.telegram.org/js/app.js>重定向至<https://127.0.0.1:9003/app.js>。
 - `./telegramircd.py --tls-cert cert.pem --tls-key key.pem`，会监听127.1:6669的IRC和127.1:9003的HTTPS(兼WebSocket over TLS)
 
-## IRC客户端
+## 使用
 
-- IRC客户端连接127.1:6669
-- 刷新<https://web.telegram.org>页面
-- 回到IRC客户端，会发现自动加入了`+telegram` channel
+- 打开<https://web.telegram.org>页面，会自动发起WebSocket连接。若打开多个，只有第一个生效
+- IRC客户端连接127.1:6669，会发现自动加入了`+telegram` channel
 
 在`+telegram`发信并不会群发，只是为了方便查看有哪些朋友。
 
@@ -45,6 +44,8 @@ telegramircd是个简单的IRC服务器，可以执行通常的IRC命令，可�
 - `/who channel`，查看群成员列表
 
 ## 显示
+
+![](https://maskray.me/static/2016-05-07-telegramircd/run.jpg)
 
 - `[Doc] $filename filesystem:https://web.telegram.org/temporary/t_filexxxxxxxxxxxxxxx`
 - `[Photo] filesystem:https://web.telegram.org/temporary/xxxxxxxxxxx`。图片(照片)
