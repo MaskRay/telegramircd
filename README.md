@@ -24,10 +24,16 @@ telegramircd类似于bitlbee，在web.telegram.org和IRC间建起桥梁，可以
 
 ## 使用
 
-- 打开<https://web.telegram.org>页面，会自动发起WebSocket连接。若打开多个，只有第一个生效
+- 访问<https://web.telegram.org>，会自动发起WebSocket连接。若打开多个，只有第一个生效
 - IRC客户端连接127.1:6669，会发现自动加入了`+telegram` channel
 
 在`+telegram`发信并不会群发，只是为了方便查看有哪些朋友。
+
+在`+telegram` channel可以执行一些命令：
+
+- `help`，帮助
+- `status`，已获取的mutual friend、群列表
+- `eval $password $expr`: 如果运行时带上了`--password $password`选项，这里可以eval，方便调试，比如`eval $password client`
 
 ## IRC命令
 

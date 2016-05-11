@@ -314,7 +314,7 @@ class RegisteredCommands:
     @staticmethod
     def summon(client, nick, msg):
         if client.has_telegram_user(nick):
-            Web.instance.add_friend(client.token, client.get_telegram_user(nick).id, msg)
+            Web.instance.add_friend(client.get_telegram_user(nick).id, msg)
         else:
             client.err_nologin(nick)
 
@@ -642,10 +642,10 @@ class StatusChannel(Channel):
             client.err_notonchannel(self.name)
             return
         if msg == 'help':
-            self.respond(client, 'new [token]  generate new token or use specified token')
-            self.respond(client, 'help         display this help')
+            self.respond(client, 'help            display this help')
+            self.respond(client, 'eval [password] eval')
+            self.respond(client, 'status          channels and users')
         elif msg == 'status':
-            self.respond(client, 'Token: {}', client.token)
             self.respond(client, 'IRC channels:')
             for name, room in client.channels.items():
                 if isinstance(room, StandardChannel):
@@ -662,32 +662,16 @@ class StatusChannel(Channel):
                 if isinstance(room, TelegramRoom):
                     self.respond(client, name)
         else:
-            m = re.match(r'admin (\S+)$', msg.strip())
+            m = re.match(r'eval (\S+) (.+)$', msg.strip())
             if m and m.group(1) == client.server.options.password:
-                self.respond(client, 'Token list:')
-                for token, c in client.server.tokens.items():
-                    self.respond(client, '{}: {}', token, c.prefix)
+                try:
+                    r = pprint.pformat(eval(m.group(2)))
+                except:
+                    r = traceback.format_exc()
+                for line in r.splitlines():
+                    self.respond(client, line)
             else:
-                m = re.match(r'eval (\S+) (.+)$', msg.strip())
-                if m and m.group(1) == client.server.options.password:
-                    try:
-                        r = pprint.pformat(eval(m.group(2)))
-                    except:
-                        r = traceback.format_exc()
-                    for line in r.splitlines():
-                        self.respond(client, line)
-                else:
-                    m = re.match(r'new ([0-9a-f]{32})$', msg.strip())
-                    if m:
-                        token = m.group(1)
-                        if not client.change_token(token):
-                            self.respond(client, 'Token {} has been taken', token)
-                        elif client.token == token:
-                            self.respond(client, 'New token {}', token)
-                        else:
-                            self.respond(client, 'Token {} has been taken', token)
-                    else:
-                        self.respond(client, 'Unknown command {}', msg)
+                self.respond(client, 'Unknown command {}', msg)
 
     def on_join(self, member):
         if isinstance(member, Client):
@@ -809,8 +793,7 @@ class TelegramRoom(Channel):
             elif not user.is_friend:
                 client.err_nosuchnick(nick)
             else:
-                # TODO
-                Web.instance.add_member(client.token, self.id, user.id)
+                Web.instance.add_member(self.id, user.id)
         else:
             client.err_nosuchnick(nick)
 
@@ -831,8 +814,7 @@ class TelegramRoom(Channel):
     def on_kick(self, client, nick, reason):
         if client.has_telegram_user(nick):
             user = client.get_telegram_user(nick)
-            # TODO
-            Web.instance.del_member(client.token, self.id, user.id)
+            Web.instance.del_member(self.id, user.id)
         else:
             client.err_usernotinchannel(nick, self.name)
 
@@ -867,8 +849,7 @@ class TelegramRoom(Channel):
     def on_topic(self, client, new=None):
         if new:
             if True:  # TODO is owner
-                # TODO
-                Web.instance.mod_topic(client.token, self.id, new)
+                Web.instance.mod_topic(self.id, new)
             else:
                 client.err_nochanmodes(self.name)
         else:
@@ -915,7 +896,6 @@ class Client:
         self.nick2telegram_user = {}      # nick -> IRC user or Telegram user (friend or room contact)
         self.id2telegram_user = {}  # id -> TelegramUser
         self.me = None
-        self.token = None
 
     def enter(self, channel):
         self.channels[irc_lower(channel.name)] = channel
@@ -929,9 +909,6 @@ class Client:
                 break
         else:
             room.on_join(self)
-
-    def change_token(self, new):
-        return self.server.change_token(self, new)
 
     def at_users(self, msg):
         line = ''
@@ -1152,7 +1129,7 @@ class Client:
 
                     status_channel = StatusChannel.instance
                     RegisteredCommands.join(self, status_channel.name)
-                    status_channel.respond(self, 'Please reload web.telegram.org to see your friend list in this channel')
+                    status_channel.respond(self, 'Visit web.telegram.org and then you will see your friend list in this channel')
                     Web.instance.close_connections()
 
     async def handle_irc(self):
@@ -1358,8 +1335,6 @@ class Server:
         def done(task):
             if client.nick:
                 self.remove_nick(client.nick)
-            if client.token:
-                del self.tokens[client.token]
 
         try:
             client = Client(self, reader, writer, self.options)
@@ -1410,17 +1385,6 @@ class Server:
 
     def remove_nick(self, nick):
         del self.nicks[irc_lower(nick)]
-
-    def change_token(self, client, new):
-        if client.token == new:
-            return True
-        if new in self.tokens:
-            return False
-        if client.token:
-            self.tokens.pop(client.token)
-        self.tokens[new] = client
-        client.token = new
-        return True
 
     def start(self, loop):
         self.loop = loop
