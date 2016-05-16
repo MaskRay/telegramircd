@@ -373,10 +373,10 @@ class RegisteredCommands:
         # on name conflict, prefer to resolve Telegram user first
         if client.has_telegram_user(target):
             user = client.get_telegram_user(target)
-            if user.is_friend:
-                user.on_notice_or_privmsg(client, command, msg)
-            elif command == 'PRIVMSG':
-                client.err_nosuchnick(target)
+            #if user.is_friend:
+            user.on_notice_or_privmsg(client, command, msg)
+            #elif command == 'PRIVMSG':
+            #    client.err_nosuchnick(target)
         # then IRC nick
         elif client.server.has_nick(target):
             client2 = client.server.get_nick(target)
@@ -391,7 +391,8 @@ class RegisteredCommands:
 
 
 USER_FLAG_SELF = 1<<10
-USER_FLAG_MUTUAL_FRIEND = 1<<12
+USER_FLAG_CONTACT = 1<<11
+USER_FLAG_MUTUAL_CONTACT = 1<<12
 
 
 class TelegramCommands:
@@ -486,8 +487,11 @@ class Channel:
             if client != source or include_source:
                 client.write(':{} {} {}'.format(source.prefix, command, line))
 
-    def deop_event(self, channel, user):
-        self.event(channel, 'MODE', '{} -o {}', channel.name, user.nick)
+    def deop_event(self, user):
+        self.event(user, 'MODE', '{} -o {}', self.name, user.nick)
+
+    def devoice_event(self, user):
+        self.event(user, 'MODE', '{} -v {}', self.name, user.nick)
 
     def nick_event(self, user, new):
         self.event(user, 'NICK', new)
@@ -502,14 +506,17 @@ class Channel:
             self.event(kicker, 'KICK', '{} {}', channel.name, kicked.nick)
         self.log(kicker, 'kicked %s', kicked.prefix)
 
-    def op_event(self, channel, user):
-        self.event(channel, 'MODE', '{} +o {}', channel.name, user.nick)
+    def op_event(self, user):
+        self.event(user, 'MODE', '{} +o {}', self.name, user.nick)
 
     def part_event(self, user, partmsg):
         if partmsg:
             self.event(user, 'PART', '{} :{}', self.name, partmsg)
         else:
             self.event(user, 'PART', self.name)
+
+    def voice_event(self, user):
+        self.event(user, 'MODE', '{} +v {}', self.name, user.nick)
 
     def on_invite(self, client, nick):
         # TODO
@@ -591,7 +598,7 @@ class StandardChannel(Channel):
         elif 'o' in self.members.pop(client):
             user = next(iter(self.members))
             self.members[user] += 'o'
-            self.op_event(self, user)
+            self.op_event(user)
         client.leave(self)
         return True
 
@@ -688,12 +695,20 @@ class StatusChannel(Channel):
             self.shadow_members[client].add(member)
             member.enter(self)
             self.join_event(member)
+            if member.flags & USER_FLAG_MUTUAL_CONTACT:
+                self.voice_event(member)
         return True
 
     def on_names(self, client):
-        members = [x.nick for x in self.shadow_members.get(client, ())]
-        members.append(client.nick)
-        client.reply('353 {} = {} :{}', client.nick, self.name, ' '.join(sorted(members)))
+        #nicks = [x.nick for x in self.shadow_members.get(client, ())]
+        nicks = []
+        for x in self.shadow_members.get(client, ()):
+            if x.flags & USER_FLAG_MUTUAL_CONTACT:
+                nicks.append('+'+x.nick)
+            else:
+                nicks.append(x.nick)
+        nicks.append(client.nick)
+        client.reply('353 {} = {} :{}', client.nick, self.name, ' '.join(sorted(nicks)))
 
     def on_part(self, member, msg=None):
         if isinstance(member, Client):
@@ -1276,7 +1291,7 @@ class TelegramUser:
             for channel in self.channels:
                 channel.nick_event(self, nick)
             self.nick = nick
-        if self.flags & USER_FLAG_MUTUAL_FRIEND:
+        if self.flags & USER_FLAG_CONTACT:
             if not self.is_friend:
                 self.is_friend = True
                 StatusChannel.instance.on_join(self)
