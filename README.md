@@ -35,6 +35,9 @@ telegramircd类似于bitlbee，在web.telegram.org和IRC间建起桥梁，可以
 - `status`，已获取的mutual friend、群列表
 - `eval $password $expr`: 如果运行时带上了`--password $password`选项，这里可以eval，方便调试，比如`eval $password client`
 
+自动调用`messages.getHistory`获取历史消息，命令行选项`-H false`可关闭这一特性。
+自动调用`messages.readHistory`标注接受消息已读。
+
 ## IRC命令
 
 telegramircd是个简单的IRC服务器，可以执行通常的IRC命令，可以对其他客户端私聊，创建standard channel(以`#`开头的channel)。另外若用token与某个微信网页版连接的，就能看到微信联系人(朋友、群联系人)显示为特殊nick、群显示为特殊channel(以`&`开头，根据群名自动设置名称)

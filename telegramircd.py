@@ -133,6 +133,10 @@ def irc_lower(s):
     return s.translate(irc_trans)
 
 
+def format_history(timestamp, line):
+    return '[{}] {}'.format(datetime.fromtimestamp(timestamp).strftime('%H:%M'), line)
+
+
 # loose
 def irc_escape(s):
     s = re.sub(r',', '.', s)       # `,` is used as seprator in IRC messages
@@ -425,15 +429,25 @@ class TelegramCommands:
 
     @staticmethod
     def message(client, data):
+        if data.get('mid'):
+            if data['mid'] in client.received_mid:
+                return
         if data['receiver']['flags'] & USER_FLAG_SELF:
             client.on_websocket_message(data)
         else:
             client.ensure_telegram_user(data['receiver']).on_websocket_message(data)
+        if data.get('mid'):
+            client.received_mid.add(data['mid'])
 
     @staticmethod
     def room_message(client, data):
+        if data.get('mid'):
+            if data['mid'] in client.received_mid:
+                return
         client.ensure_telegram_room(data['receiver']) \
             .on_websocket_message(data)
+        if data.get('mid'):
+            client.received_mid.add(data['mid'])
 
     @staticmethod
     def send_file_message_nak(client, data):
@@ -884,10 +898,14 @@ class TelegramRoom(Channel):
                 self.client.auto_join(self)
         if not self.joined:
             return
+        sender = self.client.ensure_telegram_user(data['sender'])
+        if sender not in self.members:
+            self.on_join(sender)
         for line in msg.splitlines():
-            sender = self.client.ensure_telegram_user(data['sender'])
-            if sender not in self.members:
-                self.on_join(sender)
+            if data['is_history']:
+                if not self.client.options.history:
+                    return
+                line = format_history(data['date'], line)
             self.client.write(':{} PRIVMSG {} :{}'.format(
                 self.client.prefix if self.client.me == sender else sender.prefix,
                 self.name, line))
@@ -897,7 +915,7 @@ class Client:
     def __init__(self, server, reader, writer, options):
         self.server = server
         self.options = Namespace()
-        for k in ['heartbeat', 'ignore', 'join', 'dcc_send']:
+        for k in ['heartbeat', 'ignore', 'join', 'dcc_send', 'history']:
             setattr(self.options, k, getattr(options, k))
         self.reader = reader
         self.writer = writer
@@ -913,6 +931,7 @@ class Client:
         self.nick2telegram_user = {}      # nick -> IRC user or Telegram user (friend or room contact)
         self.id2telegram_user = {}  # id -> TelegramUser
         self.me = None
+        self.received_mid = set()
 
     def enter(self, channel):
         self.channels[irc_lower(channel.name)] = channel
@@ -1266,8 +1285,12 @@ class Client:
         else:
             sender = self.ensure_telegram_user(data['sender'])
         for line in msg.splitlines():
-            self.client.write(':{} PRIVMSG {} :{}'.format(
-                sender.prefix, self.client.nick, line))
+            if data['is_history']:
+                if not self.options.history:
+                    return
+                line = format_history(data['date'], line)
+            self.write(':{} PRIVMSG {} :{}'.format(
+                sender.prefix, self.nick, line))
 
 
 class TelegramUser:
@@ -1287,7 +1310,7 @@ class TelegramUser:
             return self.username
         # fix order of Chinese names
         han = r'[\u3400-\u4dbf\u4e00-\u9fff\U00020000-\U0002ceaf]'
-        m = re.match('({}+) ({}+)$'.format(han,han), self.sortname)
+        m = re.match('({}+) ({}+)$'.format(han, han), self.sortname)
         if m:
             return m.group(2)+m.group(1)
         return self.sortname
@@ -1341,6 +1364,10 @@ class TelegramUser:
     def on_websocket_message(self, data):
         msg = data['message']
         for line in msg.splitlines():
+            if data['is_history']:
+                if not self.client.options.history:
+                    return
+                line = format_history(data['date'], line)
             self.client.write(':{} PRIVMSG {} :{}'.format(
                 self.client.prefix, self.nick, line))
 
@@ -1443,6 +1470,7 @@ def main():
     ap.add_argument('-j', '--join', choices=['all', 'auto', 'manual'], default='auto',
                     help='join mode for Telegram chatrooms. all: join all after connected; auto: join after the first message arrives; manual: no automatic join')
     ap.add_argument('-l', '--listen', default='127.0.0.1', help='IRC/HTTP/WebSocket listen address')
+    ap.add_argument('-H', '--history', default=True, help='receive history messages, default: true')
     ap.add_argument('-p', '--port', type=int, default=6669,
                     help='IRC server listen port')
     ap.add_argument('-q', '--quiet', action='store_const', const=logging.WARN, dest='loglevel')
