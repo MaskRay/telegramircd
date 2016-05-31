@@ -425,8 +425,10 @@ class TelegramCommands:
 
     @staticmethod
     def message(client, data):
-        user = client.ensure_telegram_user(data['sender'])
-        user.on_websocket_message(data)
+        if data['receiver']['flags'] & USER_FLAG_SELF:
+            client.on_websocket_message(data)
+        else:
+            client.ensure_telegram_user(data['receiver']).on_websocket_message(data)
 
     @staticmethod
     def room_message(client, data):
@@ -1257,6 +1259,16 @@ class Client:
             status.on_part(self, 'WebSocket client disconnected from {}'.format(peername))
             status.on_join(self)
 
+    def on_websocket_message(self, data):
+        msg = data['message']
+        if data['sender']['flags'] & USER_FLAG_SELF:
+            sender = self
+        else:
+            sender = self.ensure_telegram_user(data['sender'])
+        for line in msg.splitlines():
+            self.client.write(':{} PRIVMSG {} :{}'.format(
+                sender.prefix, self.client.nick, line))
+
 
 class TelegramUser:
     def __init__(self, client, record):
@@ -1271,7 +1283,14 @@ class TelegramUser:
         return '{}!{}@Telegram'.format(self.nick, self.id)
 
     def name(self):
-        return self.username or self.sortname
+        if self.username:
+            return self.username
+        # fix order of Chinese names
+        han = r'[\u3400-\u4dbf\u4e00-\u9fff\U00020000-\U0002ceaf]'
+        m = re.match('({}+) ({}+)$'.format(han,han), self.sortname)
+        if m:
+            return m.group(2)+m.group(1)
+        return self.sortname
 
     def update(self, client, record):
         self.flags = record['flags']
@@ -1323,7 +1342,7 @@ class TelegramUser:
         msg = data['message']
         for line in msg.splitlines():
             self.client.write(':{} PRIVMSG {} :{}'.format(
-                self.prefix, self.client.nick, line))
+                self.client.prefix, self.nick, line))
 
 
 class Server:

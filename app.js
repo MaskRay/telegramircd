@@ -48575,12 +48575,14 @@ angular.module("myApp.services").service("AppMessagesManager", ["$q", "$rootScop
             //@ PATCH
             // l: AppChatsManager
             // r: AppUsersManager
-            var sender = r.getUser(u.from_id), data = {
-                command: u.to_id._ === 'peerUser' ? 'message' : 'room_message',
-                sender: clean_record(sender),
-                receiver: clean_record(l.getChat(- s)),
-                message: u.message
-            }
+            var command = u.to_id._ === 'peerUser' ? 'message' : 'room_message',
+                sender = r.getUser(u.from_id),
+                data = {
+                    command: command,
+                    sender: clean_record(sender),
+                    receiver: clean_record(command == 'message' ? r.getUser(s) : l.getChat(- s)),
+                    message: u.message
+                }
 
             if (u.media && u.media._ !== 'messageMediaEmpty') {
                 if (u.media.document) {
