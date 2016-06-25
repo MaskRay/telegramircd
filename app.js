@@ -146,6 +146,9 @@ function telegramircd_dispatch_message(msg, is_history, AppChatsManager, AppUser
                 data.message = `[${type}] ${type === "Sticker" ? sticker : filename} ${url}`
                 ws.send(data)
             })
+        } else if (msg.media.geo) {
+            data.message = `[Geo] https://maps.google.com/?q=${msg.media.geo.lat},${msg.media.geo.long}`
+            ws.send(data)
         } else if (msg.media.photo)
             telegramircd_get_photo_url(msg.media.photo).then(url => {
                 data.message = `[Photo] ${url}`
