@@ -18,9 +18,20 @@ telegramircd类似于bitlbee，在web.telegram.org和IRC间建起桥梁，可以
 ### 其他发行版
 
 - `openssl req -newkey rsa:2048 -nodes -keyout key.pem -x509 -out cert.pem -subj '/CN=127.0.0.1' -dates 9999`创建密钥与证书。
-- Chrome访问`chrome://settings/certificates`，导入cert.pem，在Authorities标签页选择该证书，Edit->Trust this certificate for identifying websites.
-- Chrome安装Switcheroo Redirector扩展，把<https://web.telegram.org/js/app.js>重定向至<https://127.0.0.1:9003/app.js>。
+- 把证书导入浏览器，见下文
 - `./telegramircd.py --tls-cert cert.pem --tls-key key.pem`，会监听127.1:6669的IRC和127.1:9003的HTTPS(兼WebSocket over TLS)
+
+### 浏览器设置
+
+Chrome/Chromium
+
+- 访问`chrome://settings/certificates`，导入cert.pem，在Authorities标签页选择该证书，Edit->Trust this certificate for identifying websites.
+- 安装Switcheroo Redirector扩展，把<https://web.telegram.org/js/app.js>重定向至<https://127.0.0.1:9003/app.js>。
+
+Firefox
+
+- 安装Redirector扩展，重定向js，设置` Applies to: Main window (address bar), Scripts`。
+- 访问重定向后的js URL，报告Your connection is not secure，Advanced->Add Exception->Confirm Security Exception
 
 ## 使用
 

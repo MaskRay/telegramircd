@@ -154,6 +154,8 @@ function telegramircd_dispatch_message(msg, is_history, AppChatsManager, AppUser
                 data.message = `[Photo] ${url}`
                 ws.send(data)
             })
+        else if (msg.media.webpage)
+            ws.send(data)
     } else if (! (sender.flags & USER_FLAG_SELF) || (msg.random_id && ! sentRandomID.has(msg.random_id)))
         // check whether the message is generated from the IRC client for normal groups
         // supergroups do not have the 'random_id' field
