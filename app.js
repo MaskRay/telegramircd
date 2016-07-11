@@ -113,6 +113,11 @@ function clean_record(record) {
 }
 
 function telegramircd_dispatch_message(msg, is_history, AppChatsManager, AppUsersManager) {
+    var injector = angular.element(document).injector()
+    var AppMessagesManager = injector.get('AppMessagesManager')
+    var AppPeersManager = injector.get('AppPeersManager')
+    var MtpApiManager = injector.get('MtpApiManager')
+
     console.log(is_history, msg)
     // lastStamp is used to prevent duplicate delivery of 'is_history==true' messages
     if (is_history && ! msg.pFlags.unread || lastStamp.get(msg.from_id) === msg.date)
@@ -156,15 +161,29 @@ function telegramircd_dispatch_message(msg, is_history, AppChatsManager, AppUser
             })
         else if (msg.media.webpage)
             ws.send(data)
-    } else if (! (sender.flags & USER_FLAG_SELF) || (msg.random_id && ! sentRandomID.has(msg.random_id)))
+    } else if (! (sender.flags & USER_FLAG_SELF) || (msg.random_id && ! sentRandomID.has(msg.random_id))) {
         // check whether the message is generated from the IRC client for normal groups
         // supergroups do not have the 'random_id' field
+        if (msg.reply_to_msg_id) {
+            var mid = AppMessagesManager.getFullMessageID(msg.reply_to_msg_id, msg.to_id.channel_id || 0)
+            var reply_msg = AppMessagesManager.getMessage(mid)
+            if (reply_msg && ! reply_msg.deleted) {
+                var reply_user = AppUsersManager.getUser(reply_msg.from_id)
+                var reply_text = ''
+                for (var j = 0, i = 0; i < reply_msg.message.length && j < 8; i++, j++)
+                    if (reply_msg.message.codePointAt(i) >= 0x10000)
+                        reply_text += String.fromCodePoint(reply_msg.message.codePointAt(i++))
+                    else
+                        reply_text += reply_msg.message[i]
+                if (i < reply_msg.message.length)
+                    reply_text += '...'
+                //var reply_text = reply_msg.message.length > 8 ? `${reply_msg.message.substr(0, 8)}...` : reply_msg.message
+                data.message = `\x0315「Re ${reply_user.username || reply_user.sortName}: ${reply_text}」\x0f${msg.message}`
+            }
+        }
         data.message && ws.send(data)
+    }
 
-    var injector = angular.element(document).injector()
-    var AppMessagesManager = injector.get('AppMessagesManager')
-    var AppPeersManager = injector.get('AppPeersManager')
-    var MtpApiManager = injector.get('MtpApiManager')
     if (msg.media)
         AppMessagesManager.readMessages([msg.mid])
     else if (msg.to_id.channel_id)
