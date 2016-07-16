@@ -78,19 +78,22 @@ class Web(object):
         info('WebSocket client disconnected from %r', peername)
         return ws
 
-    def start(self, host, port, tls, loop):
+    def start(self, listens, port, tls, loop):
         self.loop = loop
         self.app = aiohttp.web.Application()
         self.app.router.add_route('GET', '/', self.handle_web_socket)
         self.app.router.add_route(
             'GET', '/app.js', self.handle_app_js)
         self.handler = self.app.make_handler()
-        self.srv = loop.run_until_complete(
-            loop.create_server(self.handler, host, port, ssl=tls))
+        self.srv = []
+        for i in listens:
+            self.srv.append(loop.run_until_complete(
+                loop.create_server(self.handler, i, port, ssl=tls)))
 
     def stop(self):
-        self.srv.close()
-        self.loop.run_until_complete(self.srv.wait_closed())
+        for i in self.srv:
+            i.close()
+            self.loop.run_until_complete(i.wait_closed())
         self.loop.run_until_complete(self.app.shutdown())
         self.loop.run_until_complete(self.handler.finish_connections(0))
         self.loop.run_until_complete(self.app.cleanup())
@@ -1449,12 +1452,15 @@ class Server:
 
     def start(self, loop):
         self.loop = loop
-        self.server = loop.run_until_complete(asyncio.streams.start_server(
-            self._accept, self.options.listen, self.options.port))
+        self.servers = []
+        for i in self.options.listen:
+            self.servers.append(loop.run_until_complete(
+                asyncio.streams.start_server(self._accept, i, self.options.port)))
 
     def stop(self):
-        self.server.close()
-        self.loop.run_until_complete(self.server.wait_closed())
+        for i in self.servers:
+            i.close()
+            self.loop.run_until_complete(i.wait_closed())
 
     ## WebSocket
     def on_websocket(self, data):
@@ -1469,7 +1475,8 @@ def main():
                     help='list of ignored regex, do not auto join to a Telegram chatroom whose name matches')
     ap.add_argument('-j', '--join', choices=['all', 'auto', 'manual'], default='auto',
                     help='join mode for Telegram chatrooms. all: join all after connected; auto: join after the first message arrives; manual: no automatic join')
-    ap.add_argument('-l', '--listen', default='127.0.0.1', help='IRC/HTTP/WebSocket listen address')
+    ap.add_argument('-l', '--listen', nargs='*', default=['127.0.0.1'],
+                    help='IRC/HTTP/WebSocket listen addresses')
     ap.add_argument('-H', '--history', default=True, help='receive history messages, default: true')
     ap.add_argument('-p', '--port', type=int, default=6669,
                     help='IRC server listen port')
@@ -1484,13 +1491,16 @@ def main():
     ap.add_argument('--tls-key', help='TLS key for HTTPS/WebSocket over TLS')
     options = ap.parse_args()
 
-    # send to syslog if run as a daemon (no controlling terminal)
-    try:
-        with open('/dev/tty'):
-            pass
+    if sys.platform == 'linux':
+        # send to syslog if run as a daemon (no controlling terminal)
+        try:
+            with open('/dev/tty'):
+                pass
+            logging.basicConfig(format='%(levelname)s: %(message)s')
+        except OSError:
+            logging.root.addHandler(logging.handlers.SysLogHandler('/dev/log'))
+    else:
         logging.basicConfig(format='%(levelname)s: %(message)s')
-    except OSError:
-        logging.root.addHandler(logging.handlers.SysLogHandler('/dev/log'))
     logging.root.setLevel(options.loglevel or logging.INFO)
 
     if options.tls_cert:
