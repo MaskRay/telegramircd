@@ -51,16 +51,16 @@ Firefox
 
 ## IRC命令
 
-telegramircd是个简单的IRC服务器，可以执行通常的IRC命令，可以对其他客户端私聊，创建standard channel(以`#`开头的channel)。另外若用token与某个微信网页版连接的，就能看到微信联系人(朋友、群联系人)显示为特殊nick、群显示为特殊channel(以`&`开头，根据群名自动设置名称)
+telegramircd是个简单的IRC服务器，可以执行通常的IRC命令，可以对其他客户端私聊，创建standard channel(以`#`开头的channel)。另外若用token与某个telegram网页版连接的，就能看到telegram联系人(朋友、群联系人)显示为特殊nick、群显示为特殊channel(以`&`开头，根据群名自动设置名称)
 
-这些特殊nick与channel只有当前客户端能看到，因此一个服务端支持多个微信帐号同时登录，每个用不同的IRC客户端控制。另外，以下命令会有特殊作用：
+这些特殊nick与channel只有当前客户端能看到，因此一个服务端支持多个telegram帐号同时登录，每个用不同的IRC客户端控制。另外，以下命令会有特殊作用：
 
 - 程序默认选项为`--join auto`，收到某个群的第一条消息后会自动加入对应的channel，即开始接收该群的消息。
 - `/dcc send nick/channel filename`，给mutual friend或群发图片/文件。参见<https://en.wikipedia.org/wiki/Direct_Client-to-Client#DCC_SEND>
 - `/list`，列出所有群
 - `/names`，更新当前群成员列表
-- `/part [channel]`的IRC原义为离开channel，转换为微信代表在当前IRC会话中不再接收该群的消息。不用担心，telegramircd并没有主动退出群的功能
-- `/query nick`打开与`$nick`的私聊窗口，与之私聊即为在微信上和他/她/它对话
+- `/part [channel]`的IRC原义为离开channel，转换为telegram代表在当前IRC会话中不再接收该群的消息。不用担心，telegramircd并没有主动退出群的功能
+- `/query nick`打开与`$nick`的私聊窗口，与之私聊即为在telegram上和他/她/它对话
 - `/who channel`，查看群成员列表
 
 ## 显示
