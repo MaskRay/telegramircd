@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from argparse import ArgumentParser, Namespace
 from aiohttp import web
-from ipdb import set_trace as bp
+#from ipdb import set_trace as bp
 from datetime import datetime
 import aiohttp, asyncio, inspect, json, logging.handlers, os, pprint, random, re, \
     signal, socket, ssl, string, sys, time, traceback, uuid, weakref
@@ -131,23 +131,23 @@ class Web(object):
                 pass
             break
 
-    def eval_web(self, expr):
-        for ws in self.ws:
-            try:
-                ws.send_str(json.dumps({
-                    'command': 'eval',
-                    'expr': expr,
-                }))
-            except:
-                pass
-            break
-
     def reload_friend(self, who):
         for ws in self.ws:
             try:
                 ws.send_str(json.dumps({
                     'command': 'reload_friend',
                     'name': who,
+                }))
+            except:
+                pass
+            break
+
+    def web_eval(self, expr):
+        for ws in self.ws:
+            try:
+                ws.send_str(json.dumps({
+                    'command': 'eval',
+                    'expr': expr,
                 }))
             except:
                 pass
@@ -202,7 +202,7 @@ class RegisteredCommands:
         client.rpl_info('{} users', len(client.server.nicks))
         client.rpl_info('{} {} users', im_name, len(client.id2special_user))
         client.rpl_info('{} {} friends', im_name,
-                        len(StatusChannel.instance.shadow_members.get(client, ())))
+                        len(StatusChannel.instance.shadow_members.get(client, {})))
         client.rpl_info('{} {} rooms', im_name, len(client.id2special_room))
 
     @staticmethod
@@ -406,10 +406,7 @@ class RegisteredCommands:
         # on name conflict, prefer to resolve special user first
         if client.has_special_user(target):
             user = client.get_special_user(target)
-            #if user.is_friend:
             user.on_notice_or_privmsg(client, command, msg)
-            #elif command == 'PRIVMSG':
-            #    client.err_nosuchnick(target)
         # then IRC nick
         elif client.server.has_nick(target):
             client2 = client.server.get_nick(target)
@@ -445,22 +442,6 @@ class SpecialCommands:
         client.ensure_special_user(data['record'])
 
     @staticmethod
-    def room(client, data):
-        debug('room %r', {k: v for k, v in data['record'].items() if k in ['id', 'title']})
-        record = data['record']
-        room = client.ensure_special_room(record)
-
-    @staticmethod
-    def room_detail(client, data):
-        record = data['record']
-        if record['id'] in client.id2special_room:
-            client.id2special_room[record['id']].update_detail(client, record)
-
-    @staticmethod
-    def web_debug(client, data):
-        debug("web_debug: " + repr(data))
-
-    @staticmethod
     def message(client, data):
         if data.get('mid'):
             if data['mid'] in client.received_mid:
@@ -468,6 +449,18 @@ class SpecialCommands:
         client.ensure_special_user(data['receiver']).on_websocket_message(data)
         if data.get('mid'):
             client.received_mid.add(data['mid'])
+
+    @staticmethod
+    def room(client, data):
+        record = data['record']
+        debug('room: ' + ', '.join(k + ':' + repr(record.get(k)) for k in ['id', 'title']))
+        room = client.ensure_special_room(record)
+
+    @staticmethod
+    def room_detail(client, data):
+        record = data['record']
+        if record['id'] in client.id2special_room:
+            client.id2special_room[record['id']].update_detail(record)
 
     @staticmethod
     def room_message(client, data):
@@ -510,6 +503,10 @@ class SpecialCommands:
             client.write(':{} PRIVMSG {} :[文字发送失败] {}'.format(
                 client.prefix, user.nick, msg))
 
+    @staticmethod
+    def web_debug(client, data):
+        debug('web_debug: ' + repr(data))
+
 ### Channels: StandardChannel, StatusChannel, SpecialChannel
 
 class Channel:
@@ -517,6 +514,7 @@ class Channel:
         self.name = name
         self.topic = ''
         self.mode = 'n'
+        self.members = {}
 
     @property
     def prefix(self):
@@ -529,7 +527,7 @@ class Channel:
         raise NotImplemented
 
     def n_members(self, client):
-        raise NotImplemented
+        return len(self.members)
 
     def event(self, source, command, fmt, *args, include_source=True):
         line = fmt.format(*args) if args else fmt
@@ -537,11 +535,17 @@ class Channel:
             if client != source or include_source:
                 client.write(':{} {} {}'.format(source.prefix, command, line))
 
+    def dehalfop_event(self, user):
+        self.event(self, 'MODE', '{} -h {}', self.name, user.nick)
+
     def deop_event(self, user):
         self.event(self, 'MODE', '{} -o {}', self.name, user.nick)
 
     def devoice_event(self, user):
         self.event(self, 'MODE', '{} -v {}', self.name, user.nick)
+
+    def halfop_event(self, user):
+        self.event(self, 'MODE', '{} +h {}', self.name, user.nick)
 
     def nick_event(self, user, new):
         self.event(user, 'NICK', new)
@@ -585,6 +589,20 @@ class Channel:
     def on_mode(self, client):
         client.rpl_channelmodeis(self.name, self.mode)
 
+    def on_names(self, client):
+        members = []
+        for u, mode in self.members.items():
+            nick = u.nick
+            if 'o' in mode:
+                nick = '@'+nick
+            elif 'v' in mode:
+                nick = '+'+nick
+            members.append(nick)
+        if members:
+            client.reply('353 {} = {} :{}', client.nick, self.name,
+                         ' '.join(sorted(members)))
+        client.reply('366 {} {} :End of NAMES list', client.nick, self.name)
+
     def on_topic(self, client, new=None):
         if new:
             client.err_nochanmodes(self.name)
@@ -599,13 +617,9 @@ class StandardChannel(Channel):
     def __init__(self, server, name):
         super().__init__(name)
         self.server = server
-        self.members = {}   # Client -> mode
 
     def multicast_group(self, source):
         return self.members.keys()
-
-    def n_members(self, client):
-        return len(self.members)
 
     def on_notice_or_privmsg(self, client, command, msg):
         self.event(client, command, '{} :{}', self.name, msg, include_source=False)
@@ -630,12 +644,6 @@ class StandardChannel(Channel):
             elif client != user:
                 self.kick_event(client, self, user, reason)
                 self.on_part(user, None)
-
-    def on_names(self, client):
-        client.reply('353 {} = {} :{}', client.nick, self.name,
-                     ' '.join(sorted('@'+u.nick if 'o' in m else u.nick
-                                     for u, m in self.members.items())))
-        client.reply('366 {} {} :End of NAMES list', client.nick, self.name)
 
     def on_part(self, client, msg=None):
         if client not in self.members:
@@ -673,7 +681,6 @@ class StatusChannel(Channel):
         super().__init__('+telegram')
         self.server = server
         self.topic = "Your friends are listed here. Messages wont't be broadcasted to them. Type 'help' to see available commands"
-        self.members = {}
         self.shadow_members = weakref.WeakKeyDictionary()
         assert not StatusChannel.instance
         StatusChannel.instance = self
@@ -685,7 +692,7 @@ class StatusChannel(Channel):
         return (client,) if client in self.members else ()
 
     def n_members(self, client):
-        return len(self.shadow_members.get(client, ())) + \
+        return len(self.shadow_members.get(client, {})) + \
             (1 if client in self.members else 0)
 
     def respond(self, client, fmt, *args):
@@ -707,7 +714,7 @@ class StatusChannel(Channel):
             self.respond(client, '    show status for user, channel and wechat rooms')
             self.respond(client, 'reload_friend $name')
             self.respond(client, '    reload friend info in case of no such nick/channel in privmsg, and use __all__ as name if you want to reload all')
-        elif msg == 'status':
+        elif msg.startswith('status'):
             pattern = None
             ary = msg.split(' ', 1)
             if len(ary) > 1:
@@ -719,7 +726,7 @@ class StatusChannel(Channel):
                     self.respond(client, '    ' + name)
             self.respond(client, '{} Friends:', im_name)
             for name, user in client.nick2wechat_user.items():
-                if user.is_friend:
+                if user.is_contact:
                     if pattern is not None and not (pattern in name or pattern in user.record.get('DisplayName', '') or pattern in user.record.get('NickName','')): continue
                     line = name + ': friend ('
                     line += ', '.join([k + ':' + repr(v) for k, v in user.record.items() if k in ['DisplayName', 'NickName']])
@@ -728,18 +735,8 @@ class StatusChannel(Channel):
             self.respond(client, '{} Rooms:', im_name)
             for name, room in client.channels.items():
                 if pattern is not None and pattern not in name: continue
-                if isinstance(room, WeChatRoom):
+                if isinstance(room, SpecialChannel):
                     self.respond(client, '    ' + name)
-        elif msg.startswith('web_eval'):
-            expr = None
-            ary = msg.split(' ', 1)
-            if len(ary) > 1:
-                expr = ary[1]
-            if not expr:
-                self.respond(client, 'None')
-            else:
-                Web.instance.eval_web(expr)
-                self.respond(client, 'expr sent, please use debug log to view eval result')
         elif msg.startswith('reload_friend'):
             who = None
             ary = msg.split(' ', 1)
@@ -749,6 +746,16 @@ class StatusChannel(Channel):
                 self.respond(client, 'reload_friend <name>')
             else:
                 Web.instance.reload_friend(who)
+        elif msg.startswith('web_eval'):
+            expr = None
+            ary = msg.split(' ', 1)
+            if len(ary) > 1:
+                expr = ary[1]
+            if not expr:
+                self.respond(client, 'None')
+            else:
+                Web.instance.web_eval(expr)
+                self.respond(client, 'expr sent, please use debug log to view eval result')
         else:
             m = re.match(r'eval (\S+) (.+)$', msg.strip())
             if m and m.group(1) == client.server.options.password:
@@ -770,25 +777,31 @@ class StatusChannel(Channel):
         else:
             client = member.client
             if client not in self.shadow_members:
-                self.shadow_members[client] = set()
+                self.shadow_members[client] = {}
             if member in self.shadow_members[client]:
                 return False
-            self.shadow_members[client].add(member)
             member.enter(self)
             self.join_event(member)
             if member.flags & USER_FLAG_MUTUAL_CONTACT:
                 self.voice_event(member)
+                self.shadow_members[client][member] = 'v'
+            else:
+                self.shadow_members[client][member] = ''
         return True
 
     def on_names(self, client):
-        nicks = []
-        for x in self.shadow_members.get(client, ()):
-            if x.flags & USER_FLAG_MUTUAL_CONTACT:
-                nicks.append('+'+x.nick)
-            else:
-                nicks.append(x.nick)
-        nicks.append(client.nick)
-        client.reply('353 {} = {} :{}', client.nick, self.name, ' '.join(sorted(nicks)))
+        members = []
+        if client in self.members:
+            members.append(client.nick)
+        for u, mode in self.shadow_members.get(client, {}).items():
+            nick = u.nick
+            if 'o' in mode:
+                nick = '@'+nick
+            elif 'v' in mode:
+                nick = '+'+nick
+            members.append(nick)
+        client.reply('353 {} = {} :{}', client.nick, self.name, ' '.join(sorted(members)))
+        client.reply('366 {} {} :End of NAMES list', client.nick, self.name)
 
     def on_part(self, member, msg=None):
         if isinstance(member, Client):
@@ -799,10 +812,10 @@ class StatusChannel(Channel):
                 self.part_event(member, msg)
             del self.members[member]
         else:
-            if member not in self.shadow_members.get(member.client, ()):
+            if member not in self.shadow_members.get(member.client, {}):
                 return False
             self.part_event(member, msg)
-            self.shadow_members[member.client].remove(member)
+            del self.shadow_members[member.client][member]
         member.leave(self)
         return True
 
@@ -818,7 +831,6 @@ class SpecialChannel(Channel):
         self.id = record['id']
         self.idle = True      # no messages yet
         self.joined = False   # `client` has not joined
-        self.members = {}
         self.update(client, record)
 
     def update(self, client, record):
@@ -843,29 +855,45 @@ class SpecialChannel(Channel):
             if joined:
                 self.on_join(client)
 
-    def update_detail(self, client, record):
+    def update_detail(self, record):
         debug('update_detail %r', record)
         if 'about' in record:
             new = record['about'].replace('\n', '\\n')
             if self.topic != new:
                 self.topic = new
-                client.reply('332 {} {} :{}', client.nick, self.name, self.topic)
+                self.client.reply('332 {} {} :{}', self.client.nick, self.name, self.topic)
         if 'participants' in record:
-            seen = {client: ''}
+            seen = {self.client: ''}
             for member in record['participants']['participants']:
-                if member['user_id'] in client.id2special_user:
-                    user = client.id2special_user[member['user_id']]
-                    seen[user] = ''
-                    if user not in self.members:
-                        self.on_join(user)
-                    if member['_'] == 'channelParticipantEditor':
+                if member['user_id'] in self.client.id2special_user:
+                    user = self.client.id2special_user[member['user_id']]
+                    if member['_'] in ('channelParticipantCreator', 'channelParticipantModerator'):
                         seen[user] = 'o'
-                        self.op_event(user)
-                    elif user.flags & USER_FLAG_MUTUAL_CONTACT:
+                    elif member['_'] == 'channelParticipantEditor':
+                        seen[user] = 'h'
+                    elif user.is_contact:
                         seen[user] = 'v'
-                        self.voice_event(user)
+                    else:
+                        seen[user] = ''
             for user in self.members.keys() - seen.keys():
                 self.on_part(user, self.name)
+            for user in seen.keys() - self.members.keys():
+                if user is not self.client:
+                    self.on_join(user)
+            for user, mode in seen.items():
+                old = self.members.get(user, '')
+                if 'h' in old and 'h' not in mode:
+                    self.dehalfop_event(user)
+                if 'h' not in old and 'h' in mode:
+                    self.halfop_event(user)
+                if 'o' in old and 'o' not in mode:
+                    self.deop_event(user)
+                if 'o' not in old and 'o' in mode:
+                    self.op_event(user)
+                if 'v' in old and 'v' not in mode:
+                    self.devoice_event(user)
+                if 'v' not in old and 'v' in mode:
+                    self.voice_event(user)
             self.members = seen
 
     def multicast_group(self, source):
@@ -874,9 +902,6 @@ class SpecialChannel(Channel):
         if isinstance(source, (SpecialUser, SpecialChannel)):
             return (source.client,)
         return (source,)
-
-    def n_members(self, client):
-        return len(self.members)
 
     def on_notice_or_privmsg(self, client, command, msg):
         if not client.ctcp(- self.id, command, msg):
@@ -887,7 +912,7 @@ class SpecialChannel(Channel):
             user = client.get_special_user(nick)
             if user in self.members:
                 client.err_useronchannel(nick, self.name)
-            elif not user.is_friend:
+            elif not user.is_contact:
                 client.err_nosuchnick(nick)
             else:
                 Web.instance.add_member(self.id, user.id)
@@ -915,20 +940,6 @@ class SpecialChannel(Channel):
         else:
             client.err_usernotinchannel(nick, self.name)
 
-    def on_names(self, client):
-        members = []
-        for u, mode in self.members.items():
-            nick = u.nick
-            if 'o' in mode:
-                nick = '@'+nick
-            elif 'v' in mode:
-                nick = '+'+nick
-            members.append(nick)
-        if members:
-            client.reply('353 {} = {} :{}', client.nick, self.name,
-                         ' '.join(sorted(members)))
-        client.reply('366 {} {} :End of NAMES list', client.nick, self.name)
-
     def on_part(self, member, msg=None):
         if isinstance(member, Client):
             if not self.joined:
@@ -941,7 +952,7 @@ class SpecialChannel(Channel):
             if member not in self.members:
                 return False
             self.part_event(member, msg)
-            self.members.remove(member)
+            del self.members[member]
         member.leave(self)
         return True
 
@@ -986,7 +997,7 @@ class Client:
     def __init__(self, server, reader, writer, options):
         self.server = server
         self.options = Namespace()
-        for k in ['heartbeat', 'ignore', 'ignore_display_name', 'join', 'dcc_send', 'history']:
+        for k in ['heartbeat', 'ignore', 'ignore_topic', 'join', 'dcc_send', 'history']:
             setattr(self.options, k, getattr(options, k))
         self.reader = reader
         self.writer = writer
@@ -1014,7 +1025,7 @@ class Client:
         for regex in self.options.ignore or []:
             if re.search(regex, room.name):
                 return
-        for regex in self.options.ignore_display_name or []:
+        for regex in self.options.ignore_topic or []:
             if re.search(regex, room.topic):
                 return
         room.on_join(self)
@@ -1054,8 +1065,6 @@ class Client:
         debug('ensure_special_user %r', record)
         if record['flags'] & USER_FLAG_SELF:
             return self
-        if record['id'] == 0:
-            return
         assert isinstance(record['id'], int)
         assert isinstance(record.get('username', ''), str)
         assert isinstance(record['sortName'], str)
@@ -1368,7 +1377,7 @@ class SpecialUser:
         self.client = client
         self.id = record['id']
         self.channels = set()
-        self.is_friend = False
+        self.is_contact = False
         self.update(client, record)
 
     @property
@@ -1404,13 +1413,21 @@ class SpecialUser:
                 channel.nick_event(self, nick)
             self.nick = nick
         if self.flags & USER_FLAG_CONTACT:
-            if not self.is_friend:
-                self.is_friend = True
+            if not self.is_contact:
+                self.is_contact = True
                 StatusChannel.instance.on_join(self)
+                for channel in self.channels:
+                    if isinstance(channel, SpecialChannel):
+                        channel.members[self] = 'v'
+                        channel.voice_event(self)
         else:
-            if self.is_friend:
-                self.is_friend = False
+            if self.is_contact:
+                self.is_contact = False
                 StatusChannel.instance.on_part(self)
+                for channel in self.channels:
+                    if isinstance(channel, SpecialChannel):
+                        channel.members[self] = ''
+                        channel.devoice_event(self)
 
     def enter(self, channel):
         self.channels.add(channel)
@@ -1539,12 +1556,12 @@ def main():
     ap = ArgumentParser(description='telegramircd brings Telegram to IRC clients')
     ap.add_argument('-d', '--debug', action='store_true', help='run ipdb on uncaught exception')
     ap.add_argument('-H', '--history', default=True, help='receive history messages, default: true')
-    ap.add_argument('-I', '--ignore-display-name', nargs='*',
-                    help='list of ignored regex, do not auto join to a WeChat chatroom whose DisplayName matches')
+    ap.add_argument('-I', '--ignore-topic', nargs='*',
+                    help='list of ignored regex, do not auto join to a '+im_name+' chatroom whose topic matches')
     ap.add_argument('-i', '--ignore', nargs='*',
-                    help='list of ignored regex, do not auto join to a WeChat chatroom whose channel name(generated from DisplayName) matches')
+                    help='list of ignored regex, do not auto join to a '+im_name+' chatroom whose channel name(generated from DisplayName) matches')
     ap.add_argument('-j', '--join', choices=['all', 'auto', 'manual'], default='auto',
-                    help='join mode for Telegram chatrooms. all: join all after connected; auto: join after the first message arrives; manual: no automatic join')
+                    help='join mode for '+im_name+' chatrooms. all: join all after connected; auto: join after the first message arrives; manual: no automatic join')
     ap.add_argument('-l', '--listen', nargs='*', default=['127.0.0.1'],
                     help='IRC/HTTP/WebSocket listen addresses')
     ap.add_argument('--listen-ircd', nargs='*',

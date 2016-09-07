@@ -40684,14 +40684,27 @@ angular.module("myApp.services", ["myApp.i18n", "izhukov.utils"]).service("AppUs
         })
     }
     function h(e) {
-        return r.invokeApi("channels.getParticipants", {
-            channel: a.getChannelInput(e),
-            filter: {
-                _: "channelParticipantsRecent"
-            },
-            offset: 0,
-            //@ PATCH
-            limit: a.isMegagroup(e) ? 5000 : 200
+        //@ channels.getParticipants can load at most 200 participants, thus call the API repeatedly
+        return new Promise(function(resolve, reject) {
+            var users = [], participants = [], limit = 200
+            function go(offset) {
+                r.invokeApi("channels.getParticipants", {
+                    channel: a.getChannelInput(e),
+                    filter: {
+                        _: "channelParticipantsRecent"
+                    },
+                    offset,
+                    limit
+                }).then(function(t) {
+                    users.push(...t.users)
+                    participants.push(...t.participants)
+                    if (t.users.length < limit)
+                        resolve({users, participants})
+                    else
+                        go(users.length)
+                })
+            }
+            go(0)
         }).then(function(t) {
             n.saveApiUsers(t.users);
             var i = t.participants
