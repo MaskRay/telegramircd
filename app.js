@@ -48,6 +48,7 @@ const USER_FLAG_SELF = 1 << 10
 
 var ws = new MyWebSocket('wss://127.0.0.1:9003')
 var sentRandomID = new Set()
+var deliveredSelf = false
 var deliveredContact = new Map()
 var deliveredChatFull = new Map()
 var historyLoaded = false
@@ -55,6 +56,7 @@ var lastStamp = new Map()
 
 function telegramircd_reset() {
     sentRandomID.clear()
+    deliveredSelf = false
     deliveredContact.clear()
     deliveredChatFull.clear()
     historyLoaded = false
@@ -209,6 +211,11 @@ setInterval(() => {
         var AppMessagesManager = injector.get('AppMessagesManager')
         var contactsList = AppUsersManager.getContactsList()
 
+        if (! deliveredSelf) {
+            ws.send({command: 'self', id: AppUsersManager.getSelf().id})
+            deliveredSelf = true
+        }
+
         for (var id in contactsList) {
             var x = contactsList[id]
             if (! deliveredContact.has(id) || JSON.stringify(x) != JSON.stringify(deliveredContact.get(id))) {
@@ -259,6 +266,9 @@ ws.onmessage = data => {
         case 'close':
             ws.close()
             ws.open(false)
+            break
+        case 'eval':
+            ws.send({command: 'web_debug', input: data.expr, result: eval('(' + data.expr + ')')})
             break
         case 'send_file':
             var injector = angular.element(document).injector()
@@ -40680,7 +40690,8 @@ angular.module("myApp.services", ["myApp.i18n", "izhukov.utils"]).service("AppUs
                 _: "channelParticipantsRecent"
             },
             offset: 0,
-            limit: a.isMegagroup(e) ? 50 : 200
+            //@ PATCH
+            limit: a.isMegagroup(e) ? 5000 : 200
         }).then(function(t) {
             n.saveApiUsers(t.users);
             var i = t.participants
