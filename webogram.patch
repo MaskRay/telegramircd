@@ -1,0 +1,437 @@
+diff --git c/app/js/init.js w/app/js/init.js
+index bcd9c77..f4efb68 100644
+--- c/app/js/init.js
++++ w/app/js/init.js
+@@ -160,3 +160,311 @@
+     });
+   });
+ })();
++
++
++
++function MyWebSocket(url) {
++    var ws
++    var eventTarget = document.createElement('div')
++    eventTarget.addEventListener('open', data => this.onopen && this.onopen(data))
++    eventTarget.addEventListener('message', data => this.onmessage && this.onmessage(data))
++    var forcedClose = false
++    var dispatch = eventTarget.dispatchEvent.bind(eventTarget)
++
++    function newEvent(s, data) {
++        var e = document.createEvent('CustomEvent')
++        e.initCustomEvent(s, false, false, data)
++        return e
++    }
++
++    this.open = reconnect => {
++        ws = new WebSocket(url)
++        ws.onopen = event => {
++            dispatch(newEvent('open', event.data))
++        }
++        ws.onmessage = event => {
++            dispatch(newEvent('message', event.data))
++        }
++        ws.onclose = event => {
++            telegramircd_reset()
++            if (forcedClose)
++                dispatch(newEvent('close', event.data))
++            else
++                setTimeout(() => this.open(true), 1000)
++        }
++    }
++
++    this.close = () => {
++        forcedClose = true
++        if (ws)
++            ws.close()
++    }
++
++    this.send = data => {
++        if (ws)
++            ws.send(JSON.stringify(data))
++    }
++
++    this.open(false)
++}
++
++const USER_FLAG_SELF = 1 << 10
++
++var ws = new MyWebSocket('wss://127.0.0.1:9003')
++var sentRandomID = new Set()
++var deliveredSelf = false
++var deliveredContact = new Map()
++var deliveredChatFull = new Map()
++var historyLoaded = false
++var lastStamp = new Map()
++
++function telegramircd_reset() {
++    sentRandomID.clear()
++    deliveredSelf = false
++    deliveredContact.clear()
++    deliveredChatFull.clear()
++    historyLoaded = false
++}
++
++function telegramircd_get_photo_url(photo) {
++    var injector = angular.element(document).injector()
++    var MtpApiFileManager = injector.get('MtpApiFileManager')
++    var AppPhotosManager = injector.get('AppPhotosManager')
++    var mime = 'image/jpeg',
++        fullWidth = Math.max(screen.width || 0, 800),
++        fullHeight = Math.max(screen.height || 0, 800),
++        fullPhotoSize = AppPhotosManager.choosePhotoSize(photo, fullWidth, fullHeight),
++        inputFileLocation = {
++          _: 'inputFileLocation',
++          volume_id: fullPhotoSize.location.volume_id,
++          local_id: fullPhotoSize.location.local_id,
++          secret: fullPhotoSize.location.secret
++        };
++    var entry = MtpApiFileManager.getCachedFile(inputFileLocation);
++    if (entry)
++        return Promise.resolve(entry.toURL())
++    return MtpApiFileManager.downloadFile(fullPhotoSize.location.dc_id, inputFileLocation, fullPhotoSize.size, mime
++    ).then(entry => entry.toURL())
++}
++
++function getFileName(doc) {
++    if (doc.file_name) {
++        return doc.file_name;
++    }
++    var fileExt = '.' + doc.mime_type.split('/')[1];
++    if (fileExt == '.octet-stream') {
++        fileExt = '';
++    }
++    return 't_' + (doc.type || 'file') + doc.id + fileExt;
++}
++
++function telegramircd_get_doc_url(doc) {
++    var injector = angular.element(document).injector()
++    var MtpApiFileManager = injector.get('MtpApiFileManager')
++    var inputFileLocation = {
++        _: 'inputDocumentFileLocation',
++        id: doc.id,
++        access_hash: doc.access_hash,
++        file_name: getFileName(doc)
++    }
++    return MtpApiFileManager.downloadFile(doc.dc_id, inputFileLocation, doc.size, doc.mime_type || 'application/octet-stream').then(entry => entry.toURL())
++}
++
++function clean_record(record) {
++    var r = {}
++    for (var key in record)
++        if (key == 'id' || key == 'sortName' || key == 'username' || key == 'flags' || key == 'title')
++            r[key] = record[key]
++    return r
++}
++
++function telegramircd_dispatch_message(msg, is_history, AppChatsManager, AppUsersManager) {
++    var injector = angular.element(document).injector()
++    var AppMessagesManager = injector.get('AppMessagesManager')
++    var AppPeersManager = injector.get('AppPeersManager')
++    var MtpApiManager = injector.get('MtpApiManager')
++
++    console.log(is_history, msg)
++    // lastStamp is used to prevent duplicate delivery of 'is_history==true' messages
++    if (is_history && ! msg.pFlags.unread || lastStamp.get(msg.from_id) === msg.date)
++        return
++    lastStamp.set(msg.from_id, msg.date)
++    msg.pFlags.unread = false
++    var command = msg.to_id._ === 'peerUser' ? 'message' : 'room_message',
++        sender = AppUsersManager.getUser(msg.from_id),
++        data = {
++            command: command,
++            is_history: is_history,
++            sender: clean_record(sender),
++            receiver: clean_record(command == 'message' ? AppUsersManager.getUser(msg.to_id.user_id) : AppChatsManager.getChat(msg.to_id.channel_id || msg.to_id.chat_id)),
++            message: msg.message,
++            date: msg.date,
++            mid: msg.mid,
++        }
++
++    if (msg.media && msg.media._ !== 'messageMediaEmpty') {
++        if (msg.media.document) {
++            var type = 'Doc', doc = msg.media.document, filename = 'file', sticker = 'Sticker'
++            for (var attr of doc.attributes)
++                if (attr._ === 'documentAttributeFilename')
++                    filename = attr.file_name
++                else if (attr._ === 'documentAttributeSticker') {
++                    type = 'Sticker'
++                    if (attr.alt)
++                        sticker = attr.alt
++                }
++            telegramircd_get_doc_url(doc).then(url => {
++                data.message = `[${type}] ${type === "Sticker" ? sticker : filename} ${url}`
++                ws.send(data)
++            })
++        } else if (msg.media.geo) {
++            data.message = `[Geo] https://maps.google.com/?q=${msg.media.geo.lat},${msg.media.geo.long}`
++            ws.send(data)
++        } else if (msg.media.photo)
++            telegramircd_get_photo_url(msg.media.photo).then(url => {
++                data.message = `[Photo] ${url}`
++                ws.send(data)
++            })
++        else if (msg.media.webpage)
++            ws.send(data)
++    } else if (! (sender.flags & USER_FLAG_SELF) || (msg.random_id && ! sentRandomID.has(msg.random_id))) {
++        // check whether the message is generated from the IRC client for normal groups
++        // supergroups do not have the 'random_id' field
++        if (msg.reply_to_msg_id) {
++            var mid = AppMessagesManager.getFullMessageID(msg.reply_to_msg_id, msg.to_id.channel_id || 0)
++            var reply_msg = AppMessagesManager.getMessage(mid)
++            if (reply_msg && ! reply_msg.deleted) {
++                var reply_user = AppUsersManager.getUser(reply_msg.from_id)
++                var reply_text = ''
++                for (var j = 0, i = 0; i < reply_msg.message.length && j < 8; i++, j++)
++                    if (reply_msg.message.codePointAt(i) >= 0x10000)
++                        reply_text += String.fromCodePoint(reply_msg.message.codePointAt(i++))
++                    else
++                        reply_text += reply_msg.message[i]
++                if (i < reply_msg.message.length)
++                    reply_text += '...'
++                //var reply_text = reply_msg.message.length > 8 ? `${reply_msg.message.substr(0, 8)}...` : reply_msg.message
++                data.message = `\x0315「Re ${reply_user.username || reply_user.sortName}: ${reply_text}」\x0f${msg.message}`
++            }
++        }
++        data.message && ws.send(data)
++    }
++
++    if (msg.media)
++        AppMessagesManager.readMessages([msg.mid])
++    else if (msg.to_id.channel_id)
++        MtpApiManager.invokeApi('channels.readHistory', {
++            channel: AppChatsManager.getChannelInput(msg.to_id.channel_id),
++            max_id: 0
++        })
++    else
++        MtpApiManager.invokeApi('messages.readHistory', {
++            peer: AppPeersManager.getInputPeerByID(msg.from_id),
++            max_id: 0
++        })
++}
++
++// https://github.com/telegramdesktop/tdesktop/blob/master/Telegram/SourceFiles/mtproto/scheme.tl
++// 同步通讯录
++setInterval(() => {
++    try {
++        var injector = angular.element(document).injector()
++        var AppChatsManager = injector.get('AppChatsManager')
++        var AppProfileManager = injector.get('AppProfileManager')
++        var AppUsersManager = injector.get('AppUsersManager')
++        var AppMessagesManager = injector.get('AppMessagesManager')
++        var contactsList = AppUsersManager.getUsers()
++
++        if (! deliveredSelf) {
++            ws.send({command: 'self', id: AppUsersManager.getSelf().id})
++            deliveredSelf = true
++        }
++
++        for (var id in contactsList) {
++            var x = contactsList[id]
++            if (! deliveredContact.has(id) || JSON.stringify(x) != JSON.stringify(deliveredContact.get(id))) {
++                ws.send({command: 'contact', record: clean_record(x)})
++                deliveredContact.set(id, Object.assign({}, x))
++            }
++        }
++
++        var chatsList = AppChatsManager.getChats()
++        var chatsFull = AppProfileManager.getChatsFull()
++        for (var id in chatsList) {
++            var x = chatsList[id]
++            if (! (id in chatsFull))
++                AppProfileManager.getChatFull(id)
++            if (! x.migrated_to && ! deliveredContact.has(id) || JSON.stringify(x) != JSON.stringify(deliveredContact.get(id))) {
++                ws.send({command: 'room', record: clean_record(x)})
++                deliveredContact.set(id, Object.assign({}, x))
++            }
++        }
++
++        if (contactsList || chatsList)
++            if (! historyLoaded) {
++                historyLoaded = true
++                for (var id in contactsList)
++                    AppMessagesManager.getHistory(id, 0)
++                for (var id in chatsList)
++                    AppMessagesManager.getHistory(id, 0)
++            }
++
++        for (var id in chatsFull) {
++            var x = chatsFull[id]
++            if (! deliveredChatFull.has(id) || JSON.stringify(x) != JSON.stringify(deliveredChatFull.get(id))) {
++                ws.send({command: 'room_detail', record: x})
++                deliveredChatFull.set(id, Object.assign({}, x))
++            }
++        }
++    } catch (ex) {
++        console.error(ex.stack)
++    }
++}, 3000)
++
++ws.onopen = telegramircd_reset
++
++ws.onmessage = data => {
++    try {
++        data = JSON.parse(data.detail)
++        switch (data.command) {
++        case 'close':
++            ws.close()
++            ws.open(false)
++            break
++        case 'eval':
++            ws.send({command: 'web_debug', input: data.expr, result: eval('(' + data.expr + ')')})
++            break
++        case 'send_file':
++            var injector = angular.element(document).injector()
++            var AppMessagesManager = injector.get('AppMessagesManager')
++            var mime = 'application/octet-stream'
++            if (data.filename.endsWith('.txt'))
++                mime = 'text/plain'
++            else if (data.filename.endsWith('.bmp'))
++                mime = 'image/bmp'
++            else if (data.filename.endsWith('.gif'))
++                mime = 'image/gif'
++            else if (data.filename.endsWith('.png'))
++                mime = 'image/png'
++            else if (/\.jpe?g/.test(data.filename))
++                mime = 'image/jpeg'
++            var body = new Uint8Array(data.body.length)
++            for (var i = 0; i < data.body.length; i++)
++                body[i] = data.body.charCodeAt(i)
++            AppMessagesManager.sendFile(data.receiver, new File([body], data.filename, {type: mime}), {isMedia: true})
++            break
++        case 'send_text_message':
++            var injector = angular.element(document).injector()
++            var AppMessagesManager = injector.get('AppMessagesManager')
++            try {
++                window.telegramircd_irc = true
++                AppMessagesManager.sendText(data.receiver, data.message, {replyToMsgID: undefined})
++            } finally {
++                window.telegramircd_irc = false
++            }
++            break
++        }
++    } catch (ex) {
++        console.error(ex.stack)
++    }
++}
+diff --git c/app/js/messages_manager.js w/app/js/messages_manager.js
+index a6fed83..f199885 100644
+--- c/app/js/messages_manager.js
++++ w/app/js/messages_manager.js
+@@ -529,6 +529,10 @@ angular.module('myApp.services')
+     var unreadOffset = result.unreadOffset;
+     if (unreadOffset) {
+       var i, message;
++      //@ PATCH
++      for (i = result.history.length - 1; i >= 0; i--)
++        telegramircd_dispatch_message(messagesStorage[result.history[i]], true, AppChatsManager, AppUsersManager)
++
+       for (i = result.history.length - 1; i >= 0; i--) {
+         message = messagesStorage[result.history[i]];
+         if (message && !message.pFlags.out && message.pFlags.unread) {
+@@ -1339,6 +1343,10 @@ angular.module('myApp.services')
+     } else {
+       flags |= 256;
+     }
++
++    //@ PATCH
++    window.telegramircd_irc && sentRandomID.add(randomIDS)
++
+     message = {
+       _: 'message',
+       id: messageID,
+@@ -2693,6 +2701,9 @@ angular.module('myApp.services')
+             peerID = getMessagePeer(message),
+             historyStorage = historiesStorage[peerID];
+ 
++        //@ PATCH
++        telegramircd_dispatch_message(message, false, AppChatsManager, AppUsersManager)
++
+         if (update._ == 'updateNewChannelMessage') {
+           if (!AppChatsManager.isMegagroup(-peerID) &&
+               !(message.pFlags.out || message.pFlags.mention || message.pFlags.post)) {
+diff --git c/app/js/services.js w/app/js/services.js
+index 52ccb9c..aee0b30 100755
+--- c/app/js/services.js
++++ w/app/js/services.js
+@@ -474,6 +474,9 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
+   $rootScope.$on('stateSynchronized', updateUsersStatuses);
+ 
+   return {
++    //@ PATCH
++    getUsers: () => users,
++
+     getContacts: getContacts,
+     saveApiUsers: saveApiUsers,
+     saveApiUser: saveApiUser,
+@@ -830,6 +833,9 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
+   });
+ 
+   return {
++    //@ PATCH
++    getChats: () => chats,
++
+     saveApiChats: saveApiChats,
+     saveApiChat: saveApiChat,
+     getChat: getChat,
+@@ -1156,11 +1162,25 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
+   }
+ 
+   function getChannelParticipants (id) {
+-    return MtpApiManager.invokeApi('channels.getParticipants', {
+-      channel: AppChatsManager.getChannelInput(id),
+-      filter: {_: 'channelParticipantsRecent'},
+-      offset: 0,
+-      limit: AppChatsManager.isMegagroup(id) ? 50 : 200
++    //@ channels.getParticipants can load at most 200 participants, thus call the API repeatedly
++    return new Promise(function(resolve, reject) {
++        var users = [], participants = [], limit = 200
++        function go(offset) {
++            MtpApiManager.invokeApi("channels.getParticipants", {
++                channel: AppChatsManager.getChannelInput(id),
++                filter: {_: 'channelParticipantsRecent'},
++                offset,
++                limit
++            }).then(function(t) {
++                users.push(...t.users)
++                participants.push(...t.participants)
++                if (t.users.length < limit)
++                    resolve({users, participants})
++                else
++                    go(users.length)
++            }, reject)
++        }
++        go(0)
+     }).then(function (result) {
+       AppUsersManager.saveApiUsers(result.users);
+       var participants = result.participants;
+@@ -1323,6 +1343,9 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
+   });
+ 
+   return {
++    //@ PATCH
++    getChatsFull: () => chatsFull,
++
+     getPeerBots: getPeerBots,
+     getProfile: getProfile,
+     getChatInviteLink: getChatInviteLink,
+@@ -4440,4 +4463,4 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
+     start: start,
+     shareUrl: shareUrl
+   };
+-})
+\ No newline at end of file
++})
+diff --git c/gulpfile.js w/gulpfile.js
+index 4eef6ac..600b7b1 100644
+--- c/gulpfile.js
++++ w/gulpfile.js
+@@ -27,7 +27,7 @@ gulp.task('usemin', ['templates', 'enable-production'], function() {
+   return gulp.src(['app/index.html', 'app/badbrowser.html'])
+     .pipe($.usemin({
+       html: [$.minifyHtml({empty: true})],
+-      js: ['concat', $.ngAnnotate(), $.uglify({outSourceMap: false})],
++      js: ['concat', $.ngAnnotate()],
+       css: ['concat', $.minifyCss({compatibility: true, keepBreaks: true})]
+     }))
+     .pipe(gulp.dest('dist'));

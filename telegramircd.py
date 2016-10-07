@@ -2,7 +2,7 @@
 from argparse import ArgumentParser, Namespace
 from aiohttp import web
 #from ipdb import set_trace as bp
-from datetime import datetime
+from datetime import datetime, timezone
 import aiohttp, asyncio, inspect, json, logging.handlers, os, pprint, random, re, \
     signal, socket, ssl, string, sys, time, traceback, uuid, weakref
 
@@ -161,10 +161,6 @@ def irc_lower(s):
     return s.translate(irc_trans)
 
 
-def format_history(timestamp, line):
-    return '[{}] {}'.format(datetime.fromtimestamp(timestamp).strftime('%H:%M'), line)
-
-
 # loose
 def irc_escape(s):
     s = re.sub(r',', '.', s)       # `,` is used as seprator in IRC messages
@@ -175,6 +171,16 @@ def irc_escape(s):
 ### Commands
 
 class UnregisteredCommands(object):
+    @staticmethod
+    def cap(client, *args):
+        if not args: return
+        comm = args[0].lower()
+        if comm == 'ls' or comm == 'list':
+            client.reply('CAP * {} :server-time', args[0])
+        elif comm == 'req':
+            client.capabilities = set(['server-time']) & set(args[1].split())
+            client.reply('CAP * ACK :{}', ' '.join(client.capabilities))
+
     @staticmethod
     def nick(client, *args):
         if not args:
@@ -198,12 +204,16 @@ class RegisteredCommands:
         pass
 
     @staticmethod
+    def cap(client, *args):
+        UnregisteredCommands.cap(client, *args)
+
+    @staticmethod
     def info(client):
         client.rpl_info('{} users', len(client.server.nicks))
-        client.rpl_info('{} {} users', im_name, len(client.id2special_user))
+        client.rpl_info('{} {} users', im_name, len(client.nick2special_user))
         client.rpl_info('{} {} friends', im_name,
                         len(StatusChannel.instance.shadow_members.get(client, {})))
-        client.rpl_info('{} {} rooms', im_name, len(client.id2special_room))
+        client.rpl_info('{} {} rooms', im_name, len(client.name2special_room))
 
     @staticmethod
     def invite(client, nick, channelname):
@@ -251,7 +261,7 @@ class RegisteredCommands:
                         client.has_special_room(channelname)]
         else:
             channels = set(client.channels.values())
-            for channel in client.id2special_room.values():
+            for channel in client.name2special_room.values():
                 channels.add(channel)
             channels = list(channels)
         channels.sort(key=lambda ch: ch.name)
@@ -264,7 +274,7 @@ class RegisteredCommands:
     def lusers(client):
         client.reply('251 :There are {} users and {} {} users (local to you) on 1 server',
                      len(client.server.nicks),
-                     len(client.id2special_user),
+                     len(client.nick2special_user),
                      im_name
                      )
 
@@ -987,10 +997,13 @@ class SpecialChannel(Channel):
             if data['is_history']:
                 if not self.client.options.history:
                     return
-                line = format_history(data['date'], line)
-            self.client.write(':{} PRIVMSG {} :{}'.format(
-                sender.prefix,
-                self.name, line))
+            if 'server-time' in self.client.capabilities:
+                self.client.write('@time={}Z :{} PRIVMSG {} :{}'.format(
+                    datetime.fromtimestamp(data['date'], timezone.utc).strftime('%FT%T.%f')[:23],
+                    sender.prefix, self.name, line))
+            else:
+                self.client.write(':{} PRIVMSG {} :{}'.format(
+                    sender.prefix, self.name, line))
 
 
 class Client:
@@ -1344,7 +1357,7 @@ class Client:
 
     def on_websocket_close(self, peername):
         # PART all special channels, these chatrooms will be garbage collected
-        for room in self.id2special_room.values():
+        for room in self.name2special_room.values():
             if room.joined:
                 room.on_part(self, 'WebSocket client disconnection')
         self.name2special_room.clear()

@@ -74,6 +74,15 @@ vte终端模拟器支持URL选择，但不能识别`filesystem:https://`。我�
 
 termite `C-S-Space` URL选择也不支持，可以用<https://gist.github.com/MaskRay/9e1c57642bedd8b2b965e39b2d58fc82>添加该类URL支持。感谢张酉夫的ELF hack指导。
 
+## IRCv3
+
+支持IRC version 3.1和3.2的`server-time`，`wechatircd.py`传递消息时带上创建时刻，客户端显示消息创建时刻而不是收到消息的时刻。参见<http://ircv3.net/irc/>。IRCv3客户端支持参见<http://ircv3.net/software/clients.html>。
+
+WeeChat配置如下：
+```
+/set irc.server_default.capabilities "account-notify,away-notify,cap-notify,multi-prefix,server-time,znc.in/server-time-iso,znc.in/self-message"
+```
+
 ## 已知问题
 
 - supergroup和普通chat的message格式不同，不含`random_id`字段，没法判断该消息是否由IRC客户端生成的。
