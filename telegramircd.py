@@ -1582,7 +1582,7 @@ def main():
     ap.add_argument('-p', '--port', type=int, default=6669,
                     help='IRC server listen port')
     ap.add_argument('-q', '--quiet', action='store_const', const=logging.WARN, dest='loglevel')
-    ap.add_argument('--http-root', default=os.path.dirname(__file__), help='HTTP root directory (serving webwxapp.js)')
+    ap.add_argument('--http-root', default=os.path.dirname(__file__), help='HTTP root directory (serving app.js)')
     ap.add_argument('-v', '--verbose', action='store_const', const=logging.DEBUG, dest='loglevel')
     ap.add_argument('--dcc-send', type=int, default=10*1024*1024, help='size limit receiving from DCC SEND. 0: disable DCC SEND')
     ap.add_argument('--password', help='admin password')
