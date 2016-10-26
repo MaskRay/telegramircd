@@ -842,6 +842,11 @@ class SpecialChannel(Channel):
         self.idle = True      # no messages yet
         self.joined = False   # `client` has not joined
         self.update(client, record)
+        self.log_file = None
+
+    @property
+    def nick(self):
+        return self.name
 
     def update(self, client, record):
         self.flags = record['flags']
@@ -915,6 +920,7 @@ class SpecialChannel(Channel):
 
     def on_notice_or_privmsg(self, client, command, msg):
         if not client.ctcp(- self.id, command, msg):
+            client.server.irc_log(self, datetime.now(), client, msg)
             Web.instance.send_text_message(- self.id, client.at_users(msg))
 
     def on_invite(self, client, nick):
@@ -997,6 +1003,7 @@ class SpecialChannel(Channel):
             if data['is_history']:
                 if not self.client.options.history:
                     return
+            self.client.server.irc_log(self, datetime.fromtimestamp(data['date']), sender, line)
             if 'server-time' in self.client.capabilities:
                 self.client.write('@time={}Z :{} PRIVMSG {} :{}'.format(
                     datetime.fromtimestamp(data['date'], timezone.utc).strftime('%FT%T.%f')[:23],
@@ -1027,6 +1034,7 @@ class Client:
         self.id2special_user = {}  # id -> SpecialUser
         self.received_mid = set()
         self.id = 0
+        self.capabilities = set()
 
     def enter(self, channel):
         self.channels[irc_lower(channel.name)] = channel
@@ -1380,9 +1388,14 @@ class Client:
             if data['is_history']:
                 if not self.options.history:
                     return
-                line = format_history(data['date'], line)
-            self.write(':{} PRIVMSG {} :{}'.format(
-                sender.prefix, self.nick, line))
+            self.server.irc_log(sender, datetime.fromtimestamp(data['date']), sender, line)
+            if 'server-time' in self.capabilities:
+                self.write('@time={}Z :{} PRIVMSG {} :{}'.format(
+                    datetime.fromtimestamp(data['date'], timezone.utc).strftime('%FT%T.%f')[:23],
+                    sender.prefix, self.nick, line))
+            else:
+                self.write(':{} PRIVMSG {} :{}'.format(
+                    sender.prefix, self.nick, line))
 
 
 class SpecialUser:
@@ -1450,6 +1463,7 @@ class SpecialUser:
 
     def on_notice_or_privmsg(self, client, command, msg):
         if not client.ctcp(self.id, command, msg):
+            client.server.irc_log(self, datetime.now(), client, msg)
             Web.instance.send_text_message(self.id, client.at_users(msg))
 
     def on_who_member(self, client, channelname):
@@ -1467,9 +1481,14 @@ class SpecialUser:
             if data['is_history']:
                 if not self.client.options.history:
                     return
-                line = format_history(data['date'], line)
-            self.client.write(':{} PRIVMSG {} :{}'.format(
-                self.client.prefix, self.nick, line))
+            self.client.server.irc_log(self, datetime.fromtimestamp(data['date']), self.client, line)
+            if 'server-time' in self.client.capabilities:
+                self.client.write('@time={}Z :{} PRIVMSG {} :{}'.format(
+                    datetime.fromtimestamp(data['date'], timezone.utc).strftime('%FT%T.%f')[:23],
+                    self.client.prefix, self.nick, line))
+            else:
+                self.client.write(':{} PRIVMSG {} :{}'.format(
+                    self.client.prefix, self.nick, line))
 
 
 class Server:
@@ -1564,6 +1583,24 @@ class Server:
         for client in self.clients:
             client.on_websocket(data)
 
+    def irc_log(self, channel, local_time, sender, line):
+        if self.options.logger_mask is None:
+            return
+        for regex in self.options.logger_ignore or []:
+            if re.search(regex, channel.name):
+                return
+        filename = local_time.strftime(self.options.logger_mask.replace('$channel', channel.nick))
+        time_str = local_time.strftime(self.options.logger_time_format.replace('$channel', channel.nick))
+        if channel.log_file is None or channel.log_file.name != filename:
+            if channel.log_file is not None:
+                channel.log_file.close()
+            os.makedirs(os.path.dirname(filename), exist_ok=True)
+            channel.log_file = open(filename, 'a')
+        channel.log_file.write('{}\t{}\t{}\n'.format(
+            time_str, sender.nick,
+            re.sub(r'\x03\d+(,\d+)?|[\x02\x0f\x1d\x1f\x16]', '', line)))
+        channel.log_file.flush()
+
 
 def main():
     ap = ArgumentParser(description='telegramircd brings Telegram to IRC clients')
@@ -1579,6 +1616,9 @@ def main():
                     help='IRC/HTTP/WebSocket listen addresses')
     ap.add_argument('--listen-ircd', nargs='*',
                     help='IRC listen addresses (overriding --listen value for IRC server)')
+    ap.add_argument('--logger-ignore', nargs='*', help='list of ignored regex, do not log contacts/chatrooms whose names match')
+    ap.add_argument('--logger-mask', help='WeeChat logger.mask.irc')
+    ap.add_argument('--logger-time-format', default='%H:%M', help='WeeChat logger.file.time_format')
     ap.add_argument('-p', '--port', type=int, default=6669,
                     help='IRC server listen port')
     ap.add_argument('-q', '--quiet', action='store_const', const=logging.WARN, dest='loglevel')
