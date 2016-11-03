@@ -95,6 +95,8 @@ Supported IRC commands:
 - `/query $nick`, open a chat window with `$nick`.
 - `/who $channel`, see the member list.
 
+Multi-line messages: `!m line0\nline1\nline2`
+
 ## Demo
 
 ![](https://maskray.me/static/2016-05-07-telegramircd/run.jpg)
@@ -112,6 +114,7 @@ cd webogram
 git checkout 9cf85f3a0d4e9f3e170eaed2b27ba6b0aed3952e
 patch -Np1 -i ../webogram.patch
 make
+cp dist/js/app.js /path/to/telegramircd/
 ```
 
 ## Known issues

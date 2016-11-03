@@ -1,8 +1,8 @@
 diff --git c/app/js/init.js w/app/js/init.js
-index bcd9c77..f4efb68 100644
+index bcd9c77..af98690 100644
 --- c/app/js/init.js
 +++ w/app/js/init.js
-@@ -160,3 +160,311 @@
+@@ -160,3 +160,316 @@
      });
    });
  })();
@@ -304,7 +304,12 @@ index bcd9c77..f4efb68 100644
 +            var AppMessagesManager = injector.get('AppMessagesManager')
 +            try {
 +                window.telegramircd_irc = true
-+                AppMessagesManager.sendText(data.receiver, data.message, {replyToMsgID: undefined})
++                var message
++                if (data.message.startsWith('!m '))
++                  message = data.message.substr(3).replace('\\n', '\n')
++                else
++                  message = data.message
++                AppMessagesManager.sendText(data.receiver, message, {replyToMsgID: undefined})
 +            } finally {
 +                window.telegramircd_irc = false
 +            }

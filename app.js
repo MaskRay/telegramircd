@@ -866,7 +866,12 @@ ws.onmessage = data => {
             var AppMessagesManager = injector.get('AppMessagesManager')
             try {
                 window.telegramircd_irc = true
-                AppMessagesManager.sendText(data.receiver, data.message, {replyToMsgID: undefined})
+                var message
+                if (data.message.startsWith('!m '))
+                  message = data.message.substr(3).replace('\\n', '\n')
+                else
+                  message = data.message
+                AppMessagesManager.sendText(data.receiver, message, {replyToMsgID: undefined})
             } finally {
                 window.telegramircd_irc = false
             }
