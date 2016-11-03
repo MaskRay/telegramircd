@@ -36,6 +36,12 @@ Firefox
 - Install extension Redirector, redirects `app.js` as above, click ` Applies to: Main window (address bar), Scripts`.
 - Visit the redirected JavaScript URL, Firefox will show "Your connection is not secure", Advanced->Add Exception->Confirm Security Exception.
 
+### Headless browser in Linux
+
+- Create a new browser user profile with `/opt/google/chrome/google-chrome --user-data-dir=$HOME/.config/google-chrome-telegramircd https://web.telegram.org`, and do the aforementioned configuration.
+- Install xvfb
+- Run `/opt/google/chrome/google-chrome --user-data-dir=$HOME/.config/google-chrome-telegramircd https://web.telegram.org`
+
 ## Usage
 
 - Run `telegramircd.py` to start the IRC + HTTPS + WebSocket server.
