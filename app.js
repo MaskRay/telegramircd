@@ -868,7 +868,7 @@ ws.onmessage = data => {
                 window.telegramircd_irc = true
                 var message
                 if (data.message.startsWith('!m '))
-                  message = data.message.substr(3).replace('\\n', '\n')
+                  message = data.message.substr(3).replace(/\\n/g, '\n')
                 else
                   message = data.message
                 AppMessagesManager.sendText(data.receiver, message, {replyToMsgID: undefined})

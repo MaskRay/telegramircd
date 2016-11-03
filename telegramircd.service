@@ -1,0 +1,14 @@
+[Unit]
+Description=Bring web.telegram.org to IRC clients
+Documentation=https://github.com/MaskRay/telegramircd
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/telegramircd --http-cert /etc/telegramircd/cert.pem --http-key /etc/telegramircd/key.pem --http-root /usr/share/telegramircd
+#server side log, N.B. use '%%' in place of '%' to specify a single percent sign, see man 5 systemd.unit
+#ExecStart=/usr/bin/telegramircd --http-cert /etc/telegramircd/cert.pem --http-key /etc/telegramircd/key.pem --http-root /usr/share/telegramircd --logger-mask '/tmp/telegramircd/$channel/%%Y-%%m-%%d.log'
+#IRC over TLS + connection password
+#ExecStart=/usr/bin/telegramircd --http-cert /etc/telegramircd/cert.pem --http-key /etc/telegramircd/key.pem --http-root /usr/share/telegramircd --irc-cert /etc/telegramircd/irc-cert.pem --irc-key /etc/telegramircd/irc-key.pem --irc-password yourpassword
+
+[Install]
+WantedBy=multi-user.target
