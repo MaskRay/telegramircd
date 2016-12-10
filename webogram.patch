@@ -1,5 +1,5 @@
 diff --git c/app/js/init.js w/app/js/init.js
-index bcd9c77..8eed5c8 100644
+index bcd9c77..31168aa 100644
 --- c/app/js/init.js
 +++ w/app/js/init.js
 @@ -160,3 +160,316 @@
@@ -257,7 +257,7 @@ index bcd9c77..8eed5c8 100644
 +
 +        for (var id in chatsFull) {
 +            var x = chatsFull[id]
-+            if (! deliveredChatFull.has(id) || JSON.stringify(x) != JSON.stringify(deliveredChatFull.get(id))) {
++            if (! x.migrated_to && (! deliveredChatFull.has(id) || JSON.stringify(x) != JSON.stringify(deliveredChatFull.get(id)))) {
 +                ws.send({command: 'room_detail', record: x})
 +                deliveredChatFull.set(id, Object.assign({}, x))
 +            }

@@ -819,7 +819,7 @@ setInterval(() => {
 
         for (var id in chatsFull) {
             var x = chatsFull[id]
-            if (! deliveredChatFull.has(id) || JSON.stringify(x) != JSON.stringify(deliveredChatFull.get(id))) {
+            if (! x.migrated_to && (! deliveredChatFull.has(id) || JSON.stringify(x) != JSON.stringify(deliveredChatFull.get(id)))) {
                 ws.send({command: 'room_detail', record: x})
                 deliveredChatFull.set(id, Object.assign({}, x))
             }
