@@ -64,7 +64,7 @@ You will join `+telegram` channel automatically and find your contact list there
 
 ## Server options
 
-- Join mode. There are three modes, the default is `--join auto`: join the channel upon receiving the first message. The other two are `--join all`: join all the channels; `--join manual`: no automatic join.
+- Join mode. There are three modes, the default is `--join auto`: join the channel upon receiving the first message, no rejoin after issuing `/part` and receiving messages later. The other three are `--join all`: join all the channels; `--join manual`: no automatic join; `--join new`: like `auto`, but rejoin when new messages arrive even if after `/part`.
 - Groups that should not join automatically. This feature supplements join mode.
   + `--ignore 'fo[o]' bar`, do not auto join chatrooms whose channel name(generated from DisplayName) matches regex `fo[o]` or `bar`
   + `--ignore-topic 'fo[o]' bar`, do not auto join chatrooms whose topics matches regex `fo[o]` or `bar`
@@ -108,6 +108,7 @@ Supported IRC commands:
 - `/cap`, supported capabilities.
 - `/dcc send $nick/$channel $filename`, send image or file。This feature borrows the command `/dcc send` which is well supported in IRC clients. See <https://en.wikipedia.org/wiki/Direct_Client-to-Client#DCC_SEND>.
 - `/list`, list groups.
+- `/mode +m`, no rejoin in `--join new` mode. `/mode -m` to revert.
 - `/names`, update nicks in the channel.
 - `/part $channel`, no longer receive messages from the channel. It just borrows the command `/part` and it will not leave the group.
 - `/query $nick`, open a chat window with `$nick`.
