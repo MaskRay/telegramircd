@@ -1,13 +1,11 @@
 diff --git c/app/js/init.js w/app/js/init.js
-index bcd9c77..31168aa 100644
+index 68f01a08..12474dc1 100644
 --- c/app/js/init.js
 +++ w/app/js/init.js
-@@ -160,3 +160,316 @@
-     });
-   });
- })();
-+
-+
+@@ -110,3 +110,316 @@
+     })
+   })
+ })()
 +
 +function MyWebSocket(url) {
 +    var ws
@@ -240,9 +238,11 @@ index bcd9c77..31168aa 100644
 +            var x = chatsList[id]
 +            if (! (id in chatsFull))
 +                AppProfileManager.getChatFull(id)
-+            if (! x.migrated_to && ! deliveredContact.has(id) || JSON.stringify(x) != JSON.stringify(deliveredContact.get(id))) {
-+                ws.send({command: 'room', record: clean_record(x)})
-+                deliveredContact.set(id, Object.assign({}, x))
++            if (x._ == 'chat' || x._ == 'channel') {
++                if (! x.migrated_to && ! deliveredContact.has(id) || JSON.stringify(x) != JSON.stringify(deliveredContact.get(id))) {
++                    ws.send({command: 'room', record: clean_record(x)})
++                    deliveredContact.set(id, Object.assign({}, x))
++                }
 +            }
 +        }
 +
@@ -320,74 +320,74 @@ index bcd9c77..31168aa 100644
 +    }
 +}
 diff --git c/app/js/messages_manager.js w/app/js/messages_manager.js
-index a6fed83..f199885 100644
+index 09badfe6..14a244e9 100644
 --- c/app/js/messages_manager.js
 +++ w/app/js/messages_manager.js
-@@ -529,6 +529,10 @@ angular.module('myApp.services')
-     var unreadOffset = result.unreadOffset;
-     if (unreadOffset) {
-       var i, message;
-+      //@ PATCH
-+      for (i = result.history.length - 1; i >= 0; i--)
-+        telegramircd_dispatch_message(messagesStorage[result.history[i]], true, AppChatsManager, AppUsersManager)
-+
-       for (i = result.history.length - 1; i >= 0; i--) {
-         message = messagesStorage[result.history[i]];
-         if (message && !message.pFlags.out && message.pFlags.unread) {
-@@ -1339,6 +1343,10 @@ angular.module('myApp.services')
-     } else {
-       flags |= 256;
-     }
-+
-+    //@ PATCH
-+    window.telegramircd_irc && sentRandomID.add(randomIDS)
-+
-     message = {
-       _: 'message',
-       id: messageID,
-@@ -2693,6 +2701,9 @@ angular.module('myApp.services')
-             peerID = getMessagePeer(message),
-             historyStorage = historiesStorage[peerID];
- 
+@@ -450,6 +450,10 @@ angular.module('myApp.services')
+       if (unreadOffset) {
+         var i
+         var message
 +        //@ PATCH
-+        telegramircd_dispatch_message(message, false, AppChatsManager, AppUsersManager)
++        for (i = result.history.length - 1; i >= 0; i--)
++          telegramircd_dispatch_message(messagesStorage[result.history[i]], true, AppChatsManager, AppUsersManager)
 +
-         if (update._ == 'updateNewChannelMessage') {
-           if (!AppChatsManager.isMegagroup(-peerID) &&
-               !(message.pFlags.out || message.pFlags.mention || message.pFlags.post)) {
+         for (i = result.history.length - 1; i >= 0; i--) {
+           message = messagesStorage[result.history[i]]
+           if (message && !message.pFlags.out && message.pFlags.unread) {
+@@ -1389,6 +1393,10 @@ angular.module('myApp.services')
+       } else {
+         flags |= 256
+       }
++
++      //@ PATCH
++      window.telegramircd_irc && sentRandomID.add(randomIDS)
++
+       message = {
+         _: 'message',
+         id: messageID,
+@@ -2863,6 +2871,9 @@ angular.module('myApp.services')
+           var peerID = getMessagePeer(message)
+           var historyStorage = historiesStorage[peerID]
+ 
++          //@ PATCH
++          telegramircd_dispatch_message(message, false, AppChatsManager, AppUsersManager)
++
+           if (update._ == 'updateNewChannelMessage') {
+             var chat = AppChatsManager.getChat(-peerID)
+             if (chat.pFlags && (chat.pFlags.left || chat.pFlags.kicked)) {
 diff --git c/app/js/services.js w/app/js/services.js
-index 52ccb9c..aee0b30 100755
+index b940194b..36b18ff0 100755
 --- c/app/js/services.js
 +++ w/app/js/services.js
-@@ -474,6 +474,9 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
-   $rootScope.$on('stateSynchronized', updateUsersStatuses);
+@@ -468,6 +468,9 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
+     $rootScope.$on('stateSynchronized', updateUsersStatuses)
  
-   return {
-+    //@ PATCH
-+    getUsers: () => users,
+     return {
++      //@ PATCH
++      getUsers: () => users,
 +
-     getContacts: getContacts,
-     saveApiUsers: saveApiUsers,
-     saveApiUser: saveApiUser,
-@@ -830,6 +833,9 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
-   });
+       getContacts: getContacts,
+       saveApiUsers: saveApiUsers,
+       saveApiUser: saveApiUser,
+@@ -826,6 +829,9 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
+     })
  
-   return {
-+    //@ PATCH
-+    getChats: () => chats,
+     return {
++      //@ PATCH
++      getChats: () => chats,
 +
-     saveApiChats: saveApiChats,
-     saveApiChat: saveApiChat,
-     getChat: getChat,
-@@ -1156,11 +1162,25 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
-   }
+       saveApiChats: saveApiChats,
+       saveApiChat: saveApiChat,
+       getChat: getChat,
+@@ -1164,11 +1170,25 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
+     }
  
-   function getChannelParticipants (id) {
--    return MtpApiManager.invokeApi('channels.getParticipants', {
--      channel: AppChatsManager.getChannelInput(id),
--      filter: {_: 'channelParticipantsRecent'},
--      offset: 0,
--      limit: AppChatsManager.isMegagroup(id) ? 50 : 200
+     function getChannelParticipants (id) {
+-      return MtpApiManager.invokeApi('channels.getParticipants', {
+-        channel: AppChatsManager.getChannelInput(id),
+-        filter: {_: 'channelParticipantsRecent'},
+-        offset: 0,
+-        limit: AppChatsManager.isMegagroup(id) ? 50 : 200
 +    //@ channels.getParticipants can load at most 200 participants, thus call the API repeatedly
 +    return new Promise(function(resolve, reject) {
 +        var users = [], participants = [], limit = 200
@@ -407,36 +407,29 @@ index 52ccb9c..aee0b30 100755
 +            }, reject)
 +        }
 +        go(0)
-     }).then(function (result) {
-       AppUsersManager.saveApiUsers(result.users);
-       var participants = result.participants;
-@@ -1323,6 +1343,9 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
-   });
+       }).then(function (result) {
+         AppUsersManager.saveApiUsers(result.users)
+         var participants = result.participants
+@@ -1331,6 +1351,9 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
+     })
  
-   return {
-+    //@ PATCH
-+    getChatsFull: () => chatsFull,
+     return {
++      //@ PATCH
++      getChatsFull: () => chatsFull,
 +
-     getPeerBots: getPeerBots,
-     getProfile: getProfile,
-     getChatInviteLink: getChatInviteLink,
-@@ -4440,4 +4463,4 @@ angular.module('myApp.services', ['myApp.i18n', 'izhukov.utils'])
-     start: start,
-     shareUrl: shareUrl
-   };
--})
-\ No newline at end of file
-+})
+       getPeerBots: getPeerBots,
+       getProfile: getProfile,
+       getChatInviteLink: getChatInviteLink,
 diff --git c/gulpfile.js w/gulpfile.js
-index 4eef6ac..600b7b1 100644
+index 07d511a3..6f451b02 100644
 --- c/gulpfile.js
 +++ w/gulpfile.js
-@@ -27,7 +27,7 @@ gulp.task('usemin', ['templates', 'enable-production'], function() {
-   return gulp.src(['app/index.html', 'app/badbrowser.html'])
+@@ -31,7 +31,7 @@ gulp.task('usemin-index', function () {
+   return gulp.src('app/index.html')
      .pipe($.usemin({
        html: [$.minifyHtml({empty: true})],
 -      js: ['concat', $.ngAnnotate(), $.uglify({outSourceMap: false})],
 +      js: ['concat', $.ngAnnotate()],
        css: ['concat', $.minifyCss({compatibility: true, keepBreaks: true})]
      }))
-     .pipe(gulp.dest('dist'));
+     .pipe(gulp.dest('dist'))
