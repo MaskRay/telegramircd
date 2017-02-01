@@ -4,7 +4,7 @@ from aiohttp import web
 #from ipdb import set_trace as bp
 from datetime import datetime, timezone
 import aiohttp, asyncio, inspect, json, logging.handlers, os, pprint, random, re, \
-    signal, socket, ssl, string, sys, time, traceback, uuid, weakref
+    signal, socket, ssl, string, sys, tempfile, time, traceback, uuid, weakref
 
 logger = logging.getLogger('telegramircd')
 im_name = 'Telegram'
@@ -41,117 +41,124 @@ class ExceptionHook(object):
 class Web(object):
     instance = None
 
-    def __init__(self, http_root):
-        self.http_root = http_root
-        self.ws = weakref.WeakSet()
-        assert not Web.instance
+    def __init__(self):
         Web.instance = self
+        self.queries = []
 
-    async def handle_app_js(self, request):
-        with open(os.path.join(self.http_root, 'app.js'), 'rb') as f:
-            return web.Response(body=f.read(),
-                                headers={'Content-Type': 'application/javascript; charset=UTF-8',
-                                         'Access-Control-Allow-Origin': '*'})
+    async def handle_document(self, request):
+        id = request.match_info.get('id')
+        return aiohttp.web.Response(text='{}'.format(id))
 
-    async def handle_web_socket(self, request):
-        ws = web.WebSocketResponse()
-        self.ws.add(ws)
-        peername = request.transport.get_extra_info('peername')
-        info('WebSocket client connected from %r', peername)
-        await ws.prepare(request)
-        async for msg in ws:
-            if msg.tp == web.MsgType.text:
-                try:
-                    data = json.loads(msg.data)
-                    Server.instance.on_websocket(data)
-                except AssertionError:
-                    info('WebSocket client error')
-                    break
-                except:
-                    raise
-            elif msg.tp == web.MsgType.ping:
-                try:
-                    ws.pong()
-                except:
-                    break
-            elif msg.tp == web.MsgType.close:
+    async def handle_photo(self, request):
+        id = request.match_info.get('id')
+        return aiohttp.web.Response(text='{}'.format(id))
+
+    async def handle_telegram_cli(self):
+        decoder = json.JSONDecoder()
+        buf = b''
+        while 1:
+            try:
+                gg = await self.proc.stdout.read(4096)
+                #print('>', buf, '\n>>', gg)
+                buf += gg
+                if not buf: break
+                while buf:
+                    i0 = buf.find(b'{')
+                    i1 = buf.find(b'[')
+                    if 0 <= i0 and (i0 < i1 or i1 < 0):
+                        buf = buf[i0:]
+                    elif 0 <= i1 and (i1 < i0 or i0 < 0):
+                        buf = buf[i1:]
+                        #print('+meow', buf[1], buf)
+                        # not an array of objects
+                        if len(buf) > 1 and chr(buf[1]) not in ']{':
+                            buf = buf[2:]
+                            continue
+                        #print('-meow', buf)
+                    else:
+                        break
+                    try:
+                        decoded = buf.decode()
+                        data, j = decoder.raw_decode(decoded)
+                        buf = decoded[j:].encode()
+                        if isinstance(data, list):
+                            query = self.queries.pop(0)
+                            #print('=', query)
+                            Server.instance.on_websocket(data, query)
+                        else:
+                            if data.get('result') == 'FAIL':
+                                self.queries.pop(0)
+                            Server.instance.on_websocket(data, None)
+                    except UnicodeDecodeError:
+                        break
+                    except json.decoder.JSONDecodeError as ex:
+                        if ex.msg == 'Unterminated string starting at' or ex.msg.startswith('Expecting'):
+                            break
+                        print('===', ex)
+                        buf = buf[1:]
+                        break
+            except AssertionError as ex:
+                info('WebSocket client error')
+                traceback.print_exc()
                 break
-        info('WebSocket client disconnected from %r', peername)
-        for client in Server.instance.clients:
-            client.on_websocket_close(peername)
-        return ws
+            except:
+                raise
 
     def start(self, listens, port, tls, loop):
         self.loop = loop
         self.app = aiohttp.web.Application()
-        self.app.router.add_route('GET', '/', self.handle_web_socket)
-        self.app.router.add_route(
-            'GET', '/app.js', self.handle_app_js)
+        self.app.router.add_route('GET', '/document/{id}', self.handle_document)
+        self.app.router.add_route('GET', '/photo/{id}', self.handle_photo)
         self.handler = self.app.make_handler()
         self.srv = []
         for i in listens:
             self.srv.append(loop.run_until_complete(
                 loop.create_server(self.handler, i, port, ssl=tls)))
+        self.proc = loop.run_until_complete(asyncio.create_subprocess_exec('telegram-cli', '--disable-colors', '--disable-readline', '--json',
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, loop=loop))
+        self.loop.create_task(self.handle_telegram_cli())
 
     def stop(self):
-        for i in self.srv:
-            i.close()
-            self.loop.run_until_complete(i.wait_closed())
-        self.loop.run_until_complete(self.app.shutdown())
-        self.loop.run_until_complete(self.handler.finish_connections(0))
-        self.loop.run_until_complete(self.app.cleanup())
+        pass
 
-    def close_connections(self):
-        for ws in self.ws:
-            ws.send_str(json.dumps({'command': 'close'}))
+    def channel_info(self, channel_id):
+        self.proc.stdin.write('channel_info {}\n'.format(channel_id).encode())
 
-    def send_file(self, receiver, filename, body):
-        for ws in self.ws:
-            try:
-                body = body.decode('latin-1')
-                ws.send_str(json.dumps({
-                    'command': 'send_file',
-                    'receiver': receiver,
-                    'filename': filename,
-                    'body': body,
-                }))
-            except:
-                pass
-            break
+    def channel_get_admins(self, channel_id, offset, admins):
+        self.queries.append({'type': 'channel_get_admins', 'id': channel_id, 'offset': offset, 'admins': admins})
+        self.proc.stdin.write('channel_get_admins {} 100 {}\n'.format(channel_id, offset).encode())
 
-    def send_text_message(self, receiver, msg):
-        for ws in self.ws:
-            try:
-                ws.send_str(json.dumps({
-                    'command': 'send_text_message',
-                    'receiver': receiver,
-                    'message': msg,
-                }))
-            except:
-                pass
-            break
+    def channel_get_members(self, channel_id, offset, members):
+        self.queries.append({'type': 'channel_get_members', 'id': channel_id, 'offset': offset, 'members': members})
+        self.proc.stdin.write('channel_get_members {} 100 {}\n'.format(channel_id, offset).encode())
 
-    def reload_friend(self, who):
-        for ws in self.ws:
-            try:
-                ws.send_str(json.dumps({
-                    'command': 'reload_friend',
-                    'name': who,
-                }))
-            except:
-                pass
-            break
+    def channel_list(self):
+        self.queries.append(None)
+        self.proc.stdin.write(b'channel_list\n')
 
-    def web_eval(self, expr):
-        for ws in self.ws:
-            try:
-                ws.send_str(json.dumps({
-                    'command': 'eval',
-                    'expr': expr,
-                }))
-            except:
-                pass
-            break
+    def contact_list(self):
+        self.queries.append(None)
+        self.proc.stdin.write(b'contact_list\n')
+
+    def dialog_list(self):
+        self.queries.append(None)
+        self.proc.stdin.write(b'dialog_list\n')
+
+    def get_self(self):
+        self.proc.stdin.write(b'get_self\n')
+
+    async def send_file(self, peer, filename, body):
+        with tempfile.TemporaryDirectory() as directory:
+            filename = os.path.join(directory, filename)
+            with open(filename, 'wb') as f:
+                f.write(body)
+                f.flush()
+                self.proc.stdin.write('send_file {} {}\n'.format(peer, f.name).encode())
+            await asyncio.sleep(5)
+            os.unlink(filename)
+
+    def msg(self, peer, text):
+        self.proc.stdin.write('msg {} {}\n'.format(peer, text).encode())
 
 ### IRC utilities
 
@@ -441,61 +448,53 @@ class RegisteredCommands:
             client.err_nosuchnick(target)
 
 
-USER_FLAG_SELF = 1<<10
+USER_FLAG_SELF = 0x3
 USER_FLAG_CONTACT = 1<<11
 USER_FLAG_MUTUAL_CONTACT = 1<<12
 
 
 class SpecialCommands:
     @staticmethod
-    def add_friend_ack(client, data):
-        nick = client.id2special_user[data['user']].nick
-        client.reply('342 {} {} :Summoning user to IRC', client.nick, nick)
+    def channel(client, data):
+        debug('channel: ' + ', '.join(k + ':' + repr(data.get(k)) for k in ['id', 'title']))
+        client.ensure_special_room(data)
 
     @staticmethod
-    def add_friend_nak(client, data):
-        nick = client.id2special_user[data['user']].nick
-        client.status('Friend request to {} failed'.format(nick))
-
-    @staticmethod
-    def contact(client, data):
-        debug('contact %r', {k: v for k, v in data['record'].items() if k in ['id', 'username', 'sortName', 'flags']})
-        client.ensure_special_user(data['record'])
+    def chat(client, data):
+        debug('chat: ' + ', '.join(k + ':' + repr(data.get(k)) for k in ['id', 'title']))
+        client.ensure_special_room(data)
 
     @staticmethod
     def message(client, data):
-        if data.get('mid'):
-            if data['mid'] in client.received_mid:
-                return
-        client.ensure_special_user(data['receiver']).on_websocket_message(data)
-        if data.get('mid'):
-            client.received_mid.add(data['mid'])
-
-    @staticmethod
-    def room(client, data):
-        record = data['record']
-        debug('room: ' + ', '.join(k + ':' + repr(record.get(k)) for k in ['id', 'title']))
-        room = client.ensure_special_room(record)
-
-    @staticmethod
-    def room_detail(client, data):
-        record = data['record']
-        if record['id'] in client.id2special_room:
-            client.id2special_room[record['id']].update_detail(record)
-
-    @staticmethod
-    def room_message(client, data):
-        if data.get('mid'):
-            if data['mid'] in client.received_mid:
-                return
-        client.ensure_special_room(data['receiver']) \
-            .on_websocket_message(data)
-        if data.get('mid'):
-            client.received_mid.add(data['mid'])
+        if data['to']['peer_type'] == 'user':
+            user = client.ensure_special_user(data['to'])
+            if user:
+                user.on_websocket_message(data)
+            else:
+                client.on_websocket_message(data)
+        elif data['to']['peer_type'] in ('channel', 'chat'):
+            client.ensure_special_room(data['to']).on_websocket_message(data)
 
     @staticmethod
     def self(client, data):
         client.id = data['id']
+
+    @staticmethod
+    def user(client, data):
+        debug('user: ' + ', '.join(k + ':' + repr(data.get(k)) for k in ['id', 'print_name', 'username']))
+        client.ensure_special_user(data)
+
+    # FIXME old ---
+
+    @staticmethod
+    def room_admins(client, channel_id, admins):
+        if channel_id in client.id2special_room:
+            client.id2special_room[channel_id].update_admins(admins)
+
+    @staticmethod
+    def room_members(client, channel_id, members):
+        if channel_id in client.id2special_room:
+            client.id2special_room[channel_id].update_members(members)
 
     @staticmethod
     def send_file_message_nak(client, data):
@@ -803,7 +802,8 @@ class StatusChannel(Channel):
                 return False
             member.enter(self)
             self.join_event(member)
-            if member.flags & USER_FLAG_MUTUAL_CONTACT:
+            #if member.flags & USER_FLAG_MUTUAL_CONTACT:
+            if member.phone:
                 self.voice_event(member)
                 self.shadow_members[client][member] = 'v'
             else:
@@ -888,39 +888,40 @@ class SpecialChannel(Channel):
             if self.topic != new:
                 self.topic = new
                 self.client.reply('332 {} {} :{}', self.client.nick, self.name, self.topic)
-        if 'participants' in record:
-            seen = {self.client: ''}
-            for member in record['participants']['participants']:
-                if member['user_id'] in self.client.id2special_user:
-                    user = self.client.id2special_user[member['user_id']]
-                    if member['_'] in ('channelParticipantCreator', 'channelParticipantModerator'):
-                        seen[user] = 'o'
-                    elif member['_'] == 'channelParticipantEditor':
-                        seen[user] = 'h'
-                    elif user.is_contact:
-                        seen[user] = 'v'
-                    else:
-                        seen[user] = ''
-            for user in self.members.keys() - seen.keys():
-                self.on_part(user, self.name)
-            for user in seen.keys() - self.members.keys():
-                if user is not self.client:
-                    self.on_join(user)
-            for user, mode in seen.items():
-                old = self.members.get(user, '')
-                if 'h' in old and 'h' not in mode:
-                    self.dehalfop_event(user)
-                if 'h' not in old and 'h' in mode:
-                    self.halfop_event(user)
-                if 'o' in old and 'o' not in mode:
-                    self.deop_event(user)
-                if 'o' not in old and 'o' in mode:
+
+    def update_admins(self, admins):
+        for admin in admins:
+            user = self.client.ensure_special_user(admin)
+            if user and user in self.members:
+                old = self.members[user]
+                if 'o' not in old:
                     self.op_event(user)
-                if 'v' in old and 'v' not in mode:
-                    self.devoice_event(user)
-                if 'v' not in old and 'v' in mode:
-                    self.voice_event(user)
-            self.members = seen
+
+    def update_members(self, members):
+        seen = {self.client: ''}
+        for member in members:
+            user = self.client.ensure_special_user(member)
+            seen[user] = 'v' if user != self.client and user.is_contact else ''
+        for user in self.members.keys() - seen.keys():
+            self.on_part(user, self.name)
+        for user in seen.keys() - self.members.keys():
+            if user is not self.client:
+                self.on_join(user)
+        for user, mode in seen.items():
+            old = self.members.get(user, '')
+            if 'h' in old and 'h' not in mode:
+                self.dehalfop_event(user)
+            if 'h' not in old and 'h' in mode:
+                self.halfop_event(user)
+            if 'o' in old and 'o' not in mode:
+                self.deop_event(user)
+            if 'o' not in old and 'o' in mode:
+                self.op_event(user)
+            if 'v' in old and 'v' not in mode:
+                self.devoice_event(user)
+            if 'v' not in old and 'v' in mode:
+                self.voice_event(user)
+        self.members = seen
 
     def multicast_group(self, source):
         if not self.joined:
@@ -945,9 +946,9 @@ class SpecialChannel(Channel):
             client.rpl_channelmodeis(self.name, self.mode)
 
     def on_notice_or_privmsg(self, client, command, msg):
-        if not client.ctcp(- self.id, command, msg):
+        if not client.ctcp(self.id, command, msg):
             client.server.irc_log(self, datetime.now(), client, msg)
-            Web.instance.send_text_message(- self.id, client.at_users(msg))
+            Web.instance.msg(self.id, client.at_users(msg))
 
     def on_invite(self, client, nick):
         if client.has_special_user(nick):
@@ -966,6 +967,7 @@ class SpecialChannel(Channel):
             if self.joined:
                 return False
             self.joined = True
+            Web.instance.channel_get_members(self.id, 0, [])
             super().on_join(member)
         else:
             if member in self.members:
@@ -1013,7 +1015,6 @@ class SpecialChannel(Channel):
             member.on_who_member(client, self.name)
 
     def on_websocket_message(self, data):
-        msg = data['message']
         if not self.joined and 'm' not in self.mode:
             if self.client.options.join == 'auto' and self.idle or \
                     self.client.options.join == 'new':
@@ -1021,23 +1022,26 @@ class SpecialChannel(Channel):
         self.idle = False
         if not self.joined:
             return
-        sender = self.client.ensure_special_user(data['sender'])
-        if not sender:
+        sender = self.client.ensure_special_user(data['from'])
+        if sender == self.client:
             return
         if sender not in self.members:
             self.on_join(sender)
-        for line in msg.splitlines():
-            if data['is_history']:
-                if not self.client.options.history:
-                    return
-            self.client.server.irc_log(self, datetime.fromtimestamp(data['date']), sender, line)
-            if 'server-time' in self.client.capabilities:
-                self.client.write('@time={}Z :{} PRIVMSG {} :{}'.format(
-                    datetime.fromtimestamp(data['date'], timezone.utc).strftime('%FT%T.%f')[:23],
-                    sender.prefix, self.name, line))
-            else:
-                self.client.write(':{} PRIVMSG {} :{}'.format(
-                    sender.prefix, self.name, line))
+        if 'media' in data:
+            if data['media']['type'] == 'photo':
+                pass
+        elif 'text' in data:
+            for line in data['text'].splitlines():
+                self.client.server.irc_log(self, datetime.fromtimestamp(data['date']), sender, line)
+                if 'server-time' in self.client.capabilities:
+                    self.client.write('@time={}Z :{} PRIVMSG {} :{}'.format(
+                        datetime.fromtimestamp(data['date'], timezone.utc).strftime('%FT%T.%f')[:23],
+                        sender.prefix, self.name, line))
+                else:
+                    self.client.write(':{} PRIVMSG {} :{}'.format(
+                        sender.prefix, self.name, line))
+        else:
+            print('=====', data)
 
 
 class Client:
@@ -1059,7 +1063,6 @@ class Client:
         self.id2special_room = {}  # id -> SpecialChannel
         self.nick2special_user = {}      # nick -> IRC user or Telegram user (friend or room contact)
         self.id2special_user = {}  # id -> SpecialUser
-        self.received_mid = set()
         self.id = 0
         self.capabilities = set()
         self.authenticated = False
@@ -1112,12 +1115,12 @@ class Client:
 
     def ensure_special_user(self, record):
         debug('ensure_special_user %r', record)
-        if record['flags'] & USER_FLAG_SELF:
+        if (record.get('flags', 0) & USER_FLAG_SELF) == USER_FLAG_SELF:
             return self
-        assert isinstance(record['id'], int)
+        assert isinstance(record['id'], str)
         assert isinstance(record.get('username', ''), str)
-        assert isinstance(record['sortName'], str)
-        assert isinstance(record['flags'], int)
+        assert isinstance(record['print_name'], str)
+        assert isinstance(record.get('flags', 0), int)
         if record['id'] in self.id2special_user:
             user = self.id2special_user[record['id']]
             self.remove_special_user(user.nick)
@@ -1146,7 +1149,7 @@ class Client:
                 if channel.joined:
                     channel.on_part(self, 'Chat deleted')
             return
-        assert isinstance(record['id'], int)
+        assert isinstance(record['id'], str)
         assert isinstance(record['flags'], int)
         assert isinstance(record.get('title', ''), str)
         if record['id'] in self.id2special_room:
@@ -1305,7 +1308,11 @@ class Client:
                     status_channel = StatusChannel.instance
                     RegisteredCommands.join(self, status_channel.name)
                     status_channel.respond(self, 'Visit web.telegram.org and then you will see your friend list in this channel')
-                    Web.instance.close_connections()
+                    Web.instance.get_self()
+                    Web.instance.channel_list()
+                    Web.instance.contact_list()
+                    Web.instance.dialog_list()
+                    #Web.instance.channel_get_members('$050000007aa8613f653848c956b2b8f8', 0, [])
 
     async def handle_irc(self):
         sent_ping = False
@@ -1353,7 +1360,7 @@ class Client:
                 body += buf
                 if len(body) >= size:
                     break
-            Web.instance.send_file(receiver, filename, body)
+            await Web.instance.send_file(receiver, filename, body)
 
         async def download_wrap():
             try:
@@ -1390,10 +1397,29 @@ class Client:
                      ' '.join(name for name in
                               client.channels.keys() & self.channels.keys()))
 
-    def on_websocket(self, data):
-        command = data['command']
-        if type(SpecialCommands.__dict__.get(command)) == staticmethod:
-            getattr(SpecialCommands, command)(self, data)
+    def on_websocket(self, data, query):
+        if not query:
+            if isinstance(data, list):
+                for x in data:
+                    name = x.get('event') or x.get('peer_type')
+                    if type(SpecialCommands.__dict__.get(name)) == staticmethod:
+                        getattr(SpecialCommands, name)(self, x)
+            else:
+                name = data.get('event') or data.get('peer_type')
+                if type(SpecialCommands.__dict__.get(name)) == staticmethod:
+                    getattr(SpecialCommands, name)(self, data)
+        elif query['type'] == 'channel_get_admins':
+            admins = query['admins']+data
+            if len(data):
+                Web.instance.channel_get_admins(query['id'], query['offset']+100, admins)
+            else:
+                SpecialCommands.room_admins(self, query['id'], admins)
+        elif query['type'] == 'channel_get_members':
+            members = query['members']+data
+            if len(data):
+                Web.instance.channel_get_members(query['id'], query['offset']+100, members)
+            else:
+                SpecialCommands.room_members(self, query['id'], members)
 
     def on_websocket_open(self, peername):
         status = StatusChannel.instance
@@ -1418,10 +1444,9 @@ class Client:
             status.on_join(self)
 
     def on_websocket_message(self, data):
-        msg = data['message']
-        sender = self.ensure_special_user(data['sender'])
-        for line in msg.splitlines():
-            if data['is_history']:
+        sender = self.ensure_special_user(data['from'])
+        for line in data['text'].splitlines():
+            if 'is_history' in data:
                 if not self.options.history:
                     return
             self.server.irc_log(sender, datetime.fromtimestamp(data['date']), sender, line)
@@ -1452,15 +1477,16 @@ class SpecialUser:
             return self.username
         # fix order of Chinese names
         han = r'[\u3400-\u4dbf\u4e00-\u9fff\U00020000-\U0002ceaf]'
-        m = re.match('({}+) ({}+)$'.format(han, han), self.sortname)
+        m = re.match('({}+)_({}+)$'.format(han, han), self.print_name)
         if m:
             return m.group(2)+m.group(1)
-        return self.sortname
+        return self.print_name
 
     def update(self, client, record):
         self.flags = record['flags']
         self.username = record.get('username', '')
-        self.sortname = record['sortName']
+        self.print_name = record['print_name']
+        self.phone = record.get('phone', '')
         old_nick = getattr(self, 'nick', None)
         base = irc_escape(self.name()) or 'Guest'
         suffix = ''
@@ -1475,7 +1501,8 @@ class SpecialUser:
             for channel in self.channels:
                 channel.nick_event(self, nick)
             self.nick = nick
-        if self.flags & USER_FLAG_CONTACT:
+        #if self.flags & USER_FLAG_CONTACT:
+        if self.phone:
             if not self.is_contact:
                 self.is_contact = True
                 StatusChannel.instance.on_join(self)
@@ -1501,31 +1528,28 @@ class SpecialUser:
     def on_notice_or_privmsg(self, client, command, msg):
         if not client.ctcp(self.id, command, msg):
             client.server.irc_log(self, datetime.now(), client, msg)
-            Web.instance.send_text_message(self.id, client.at_users(msg))
+            Web.instance.msg(self.id, client.at_users(msg))
 
     def on_who_member(self, client, channelname):
         client.reply('352 {} {} {} {} {} {} H :0 {}', client.nick, channelname,
                      self.id, im_name, client.server.name,
-                     self.nick, self.sortname)
+                     self.nick, self.print_name)
 
     def on_whois(self, client):
         client.reply('311 {} {} {} {} * :{}', client.nick, self.nick,
-                     self.id, im_name, self.sortname)
+                     self.id, im_name, self.print_name)
 
     def on_websocket_message(self, data):
-        msg = data['message']
-        for line in msg.splitlines():
-            if data['is_history']:
-                if not self.client.options.history:
-                    return
-            self.client.server.irc_log(self, datetime.fromtimestamp(data['date']), self.client, line)
-            if 'server-time' in self.client.capabilities:
-                self.client.write('@time={}Z :{} PRIVMSG {} :{}'.format(
-                    datetime.fromtimestamp(data['date'], timezone.utc).strftime('%FT%T.%f')[:23],
-                    self.client.prefix, self.nick, line))
-            else:
-                self.client.write(':{} PRIVMSG {} :{}'.format(
-                    self.client.prefix, self.nick, line))
+        if 'text' in data:
+            for line in data['text'].splitlines():
+                self.client.server.irc_log(self, datetime.fromtimestamp(data['date']), self.client, line)
+                if 'server-time' in self.client.capabilities:
+                    self.client.write('@time={}Z :{} PRIVMSG {} :{}'.format(
+                        datetime.fromtimestamp(data['date'], timezone.utc).strftime('%FT%T.%f')[:23],
+                        self.client.prefix, self.nick, line))
+                else:
+                    self.client.write(':{} PRIVMSG {} :{}'.format(
+                        self.client.prefix, self.nick, line))
 
 
 class Server:
@@ -1616,9 +1640,10 @@ class Server:
             self.loop.run_until_complete(i.wait_closed())
 
     ## WebSocket
-    def on_websocket(self, data):
+    def on_websocket(self, data, query):
+        #print('+++', data)
         for client in self.clients:
-            client.on_websocket(data)
+            client.on_websocket(data, query)
 
     def irc_log(self, channel, local_time, sender, line):
         if self.options.logger_mask is None:
@@ -1645,12 +1670,12 @@ def main():
     ap.add_argument('--dcc-send', type=int, default=10*1024*1024, help='size limit receiving from DCC SEND. 0: disable DCC SEND')
     ap.add_argument('--heartbeat', type=int, default=30, help='time to wait for IRC commands. The server will send PING and close the connection after another timeout of equal duration if no commands is received.')
     ap.add_argument('-H', '--history', default=True, help='receive history messages, default: true')
-    ap.add_argument('--http-cert', help='TLS certificate for HTTPS/WebSocket over TLS. You may concatenate certificate+key, specify a single PEM file and omit `--http-key`. Use HTTP if neither --http-cert nor --http-key is specified')
+    ap.add_argument('--http-cert', help='TLS certificate for HTTPS/WebSocket over TLS. You may concatenate certificate+key, sp
+cify a single PEM file and omit `--http-key`. Use HTTP if neither --http-cert nor --http-key is specified')
     ap.add_argument('--http-key', help='TLS key for HTTPS/WebSocket over TLS')
     ap.add_argument('--http-listen', nargs='*',
                     help='HTTP/WebSocket listen addresses (overriding --listen)')
     ap.add_argument('--http-port', type=int, default=9003, help='HTTP/WebSocket listen port, default: 9003')
-    ap.add_argument('--http-root', default=os.path.dirname(__file__), help='HTTP root directory (serving injector.js)')
     ap.add_argument('-i', '--ignore', nargs='*',
                     help='list of ignored regex, do not auto join to a '+im_name+' chatroom whose channel name(generated from DisplayName) matches')
     ap.add_argument('-I', '--ignore-topic', nargs='*',
@@ -1695,7 +1720,7 @@ def main():
     if options.irc_cert or options.irc_key:
         irc_tls = ssl.SSLContext(ssl.PROTOCOL_TLSv1_2)
         irc_tls.load_cert_chain(options.irc_cert or options.irc_key,
-                                 options.irc_key or options.irc_cert)
+                                options.irc_key or options.irc_cert)
     else:
         irc_tls = None
 
@@ -1703,7 +1728,7 @@ def main():
     if options.debug:
         sys.excepthook = ExceptionHook()
     server = Server(options)
-    web = Web(options.http_root)
+    web = Web()
 
     server.start(loop, irc_tls)
     web.start(options.http_listen if options.http_listen else options.listen,
