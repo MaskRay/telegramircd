@@ -2,6 +2,7 @@
 from argparse import ArgumentParser, Namespace
 from aiohttp import web
 #from ipdb import set_trace as bp
+from collections import deque
 from datetime import datetime, timezone
 import aiohttp, asyncio, inspect, json, logging.handlers, mimetypes, os, pprint, random, re, \
     signal, socket, ssl, string, sys, tempfile, time, traceback, uuid, weakref
@@ -49,8 +50,9 @@ class Web(object):
         Web.instance = self
         self.options = options
         self.tls = tls
-        self.queries = []
         self.media_id2filename = {}
+        self.id2message = {}
+        self.recent_messages = deque()
 
     async def send_command(self, command, timeout=None):
         if timeout is None:
@@ -283,7 +285,20 @@ def irc_message(client, sender, to, log, data):
                     '[Photo] http{}://{}/photo/{}'.format('s' if Web.instance.tls else '', Web.instance.options.http_host, data['id']),
                     data['date'])
     elif 'text' in data:
+        web = Web.instance
+        if len(web.recent_messages) >= 1000:
+            msg = web.recent_messages.popleft()
+            del web.message[msg['id']]
+        web.recent_messages.append(data)
+        web.id2message[data['id']] = data
         for line in data['text'].splitlines():
+            if 'reply_id' in data and data['reply_id'] in web.id2message:
+                refer = web.id2message[data['reply_id']]
+                refer_text = refer['text']
+                if len(refer_text) > 8:
+                    refer_text = refer_text[:8]+'...'
+                user = client.ensure_special_user(refer['from'])
+                line = '\x0315「Re {}: {}」\x0f{}'.format(user.nick, refer_text, line)
             client.server.irc_log(log, datetime.fromtimestamp(data['date']), sender, line)
             irc_text(client, sender, to, line, data['date'])
     else:
