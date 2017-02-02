@@ -4,11 +4,16 @@ Documentation=https://github.com/MaskRay/telegramircd
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/telegramircd --http-cert /etc/telegramircd/cert.pem --http-key /etc/telegramircd/key.pem --http-root /usr/share/telegramircd
+ExecStart=/usr/bin/telegramircd
+
 #server side log, N.B. use '%%' in place of '%' to specify a single percent sign, see man 5 systemd.unit
-#ExecStart=/usr/bin/telegramircd --http-cert /etc/telegramircd/cert.pem --http-key /etc/telegramircd/key.pem --http-root /usr/share/telegramircd --logger-mask '/tmp/telegramircd/$channel/%%Y-%%m-%%d.log'
+#ExecStart=/usr/bin/telegramircd --logger-mask '/tmp/telegramircd/$channel/%%Y-%%m-%%d.log'
+
+#Display file links as https://127.1/photo/$id
+#ExecStart=/usr/bin/telegramircd --http-host 127.1 --http-cert /etc/telegramircd/cert.pem --http-key /etc/telegramircd/key.pem
+
 #IRC over TLS + connection password
-#ExecStart=/usr/bin/telegramircd --http-cert /etc/telegramircd/cert.pem --http-key /etc/telegramircd/key.pem --http-root /usr/share/telegramircd --irc-cert /etc/telegramircd/irc-cert.pem --irc-key /etc/telegramircd/irc-key.pem --irc-password yourpassword
+#ExecStart=/usr/bin/telegramircd --irc-cert /etc/telegramircd/irc-cert.pem --irc-key /etc/telegramircd/irc-key.pem --irc-password yourpassword
 
 [Install]
 WantedBy=multi-user.target

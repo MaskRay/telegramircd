@@ -1,60 +1,58 @@
 # telegramircd
 
-telegramircd injects JavaScript (`webogram.patch`) to web.telegram.org, which uses WebSocket to communicate with an IRC server (`telegramircd.py`), thus enable IRC clients connected to the server to send and receive messages from Telegram.
+telegramircd is an IRC server that enables IRC clients to send and receive messages from Telegram.
 
 ## Installation
 
-`>=python-3.5`
-
-`pip install -r requirements.txt`
+- `>=python-3.5`, `pip install --user -r requirements.txt`
+- `telegram-cli`. telegramircd uses the JSON output of telegram-cli to communicate with Telegram servers. Run `telegram-cli` and login to get credential.
 
 ### Arch Linux
 
-- `yaourt -S telegramircd-git`. It will generate a self-signed key/certificate pair in `/etc/telegramircd/` (see below).
-- Import `/etc/telegramircd/cert.pem` to the browser (see below).
-- `systemctl start telegramircd`, which runs `/usr/bin/telegramircd --http-cert /etc/telegramircd/cert.pem --http-key /etc/telegramircd/key.pem --http-root /usr/share/telegramircd`.
+- `aur/telegramircd-git`
+- `aur/telegram-cli-git`
+- Create `/etc/systemd/system/telegramircd.service` from the template `/lib/systemd/system/telegramircd.service`
+- `systemctl start telegramircd`
 
-The IRC server listens on 127.0.0.1:6669 (IRC) and 127.0.0.1:9003 (HTTPS + WebSocket over TLS) by default.
+The IRC server listens on 127.0.0.1:6669 (IRC) and 127.0.0.1:9003 (HTTP) by default.
 
-If you run the server on another machine, it is recommended to set up IRC over TLS and an IRC connection password: `/usr/bin/telegramircd --http-cert /etc/telegramircd/cert.pem --http-key /etc/telegramircd/key.pem --http-root /usr/share/telegramircd --irc-cert /path/to/irc.key --irc-key /path/to/irc.cert --irc-password yourpassword`.
+Specify `--http-host 127.1:9003` to display file links as `http://127.1:9003/photo/$id`.
+File links can be served via HTTPS with `--http-key` and `--http-cert`: `/usr/bin/telegramircd --http-key /etc/telegramircd/key.pem --http-cert /etc/telegramircd/cert.pem --http-host 127.1:9003`. File links will be shown as `https://127.1:9003/photo/$id`.
+
+If you run the server on another machine, it is recommended to set up IRC over TLS and an IRC connection password: `/usr/bin/telegramircd --http-key /etc/telegramircd/key.pem --http-cert /etc/telegramircd/cert.pem --irc-cert /path/to/irc.key --irc-key /path/to/irc.cert --irc-password yourpassword`.
 
 You can reuse the HTTPS certificate+key as IRC over TLS certificate+key. If you use WeeChat and find it difficult to set up a valid certificate (gnutls checks the hostname), type the following lines in WeeChat:
 ```
-set irc.server.telegram.ssl on`
+set irc.server.telegram.ssl on
 set irc.server.telegram.ssl_verify off
 set irc.server.telegram.password yourpassword`
 ```
 
-### Not Arch Linux
+My `/etc/systemd/system/telegramircd.service`:
+```systemd
+[Service]
+User=ray
+ExecStart=/usr/bin/telegramircd --join new --http-key /etc/telegramircd/key.pem --http-cert /etc/telegramircd/cert.pem --http-host file_links_host:12345 --logger-mask '/tmp/telegramircd/$channel/%%Y-%%m-%%d.log' --ignore 污水群
+```
 
-- Generate a self-signed private key/certificate pair with `openssl req -newkey rsa:2048 -nodes -keyout key.pem -x509 -out cert.pem -subj '/CN=127.0.0.1' -dates 9999`.
-- Import `cert.pem` to the browser.
-- `./telegramircd.py --tls-cert cert.pem --tls-key key.pem`
+N.B. in systemd.unit files, use `%%` in place of `%` to specify a single percent sign.
 
 ### Import self-signed certificate to the browser
 
-The JavaScript in the web client will be redirected to a modified one served by the server `telegramircd.py`. It needs a self-signed certificate to serve the JavaScript file through HTTPS and communicate with the JavaScript through WebSocket over TLS.
+`openssl req -newkey rsa:2048 -nodes -keyout key.pem -x509 -out cert.pem -subj '/CN=127.0.0.1' -dates 9999`.
 
 Chrome/Chromium
 
 - Visit `chrome://settings/certificates`, import `cert.pem`, click the `Authorities` tab, select the `127.0.0.1` certificate, Edit->Trust this certificate for identifying websites.
-- Install extension Switcheroo Redirector, redirects <https://web.telegram.org/js/app.js> to <https://127.0.0.1:9003/app.js>.
 
 Firefox
 
 - Install extension Redirector, redirects `app.js` as above, click ` Applies to: Main window (address bar), Scripts`.
-- Visit the redirected JavaScript URL, Firefox will show "Your connection is not secure", Advanced->Add Exception->Confirm Security Exception.
-
-### Headless browser in Linux
-
-- Create a new browser user profile with `/opt/google/chrome/google-chrome --user-data-dir=$HOME/.config/google-chrome-telegramircd https://web.telegram.org`, and do the aforementioned configuration.
-- Install xvfb
-- Run `/opt/google/chrome/google-chrome --user-data-dir=$HOME/.config/google-chrome-telegramircd https://web.telegram.org`
+- Visit one file link, Firefox will show "Your connection is not secure", Advanced->Add Exception->Confirm Security Exception.
 
 ## Usage
 
-- Run `telegramircd.py` to start the IRC + HTTPS + WebSocket server.
-- Visit <https://web.telegram.org>, the injected JavaScript will create a WebSocket connection to the server
+- Run `telegramircd.py` to start the IRC + HTTP/HTTPS.
 - Connect to 127.0.0.1:6669 in your IRC client
 
 You will join `+telegram` channel automatically and find your contact list there. Some commands are available:
@@ -70,19 +68,23 @@ You will join `+telegram` channel automatically and find your contact list there
   + `--ignore-topic 'fo[o]' bar`, do not auto join chatrooms whose topics matches regex `fo[o]` or `bar`
 - Surnames come first when displaying Chinese names. `SpecialUser#name`
 - History mode. The default is to receive history messages, specify `--history false` to turn off the mode.
-- HTTP/WebSocket related options
-  + `--http-cert cert.pem`, TLS certificate for HTTPS/WebSocket. You may concatenate certificate+key, specify a single PEM file and omit `--http-key`. Use HTTP if neither --http-cert nor --http-key is specified.
-  + `--http-key key.pem`, TLS key for HTTPS/WebSocket.
-  + `--http-listen 127.1 ::1`, change HTTPS/WebSocket listen address to `127.1` and `::1`, overriding `--listen`.
-  + `--http-port 9003`, change HTTPS/WebSocket listen port to 9003.
-  + `--http-root .`, the root directory to serve `app.js`.
-- `-l 127.0.0.1`, change IRC/HTTP/WebSocket listen address to `127.0.0.1`.
+- HTTP related options
+  + `--http-cert cert.pem`, TLS certificate for HTTPS. You may concatenate certificate+key, specify a single PEM file and omit `--http-key`. Use HTTP if neither --http-cert nor --http-key is specified.
+  + `--http-host $host`, Show file links as http://$host/photo/$id .
+  + `--http-key key.pem`, TLS key for HTTPS.
+  + `--http-listen 127.1 ::1`, change HTTPS listen address to `127.1` and `::1`, overriding `--listen`.
+  + `--http-port 9003`, change HTTPS listen port to 9003.
+- `-l 127.0.0.1`, change IRC/HTTP listen address to `127.0.0.1`.
 - IRC related options
   + `--irc-cert cert.pem`, TLS certificate for IRC over TLS. You may concatenate certificate+key, specify a single PEM file and omit `--irc-key`. Use plain IRC if neither --irc-cert nor --irc-key is specified.
   + `--irc-key key.pem`, TLS key for IRC over TLS.
   + `--irc-listen 127.1 ::1`, change IRC listen address to `127.1` and `::1`, overriding `--listen`.
   + `--irc-password pass`, set the connection password to `pass`.
   + `--irc-port 6669`, IRC server listen port.
+- telegram-cli related options
+  + `--telegram-cli-command telegram-cli`, telegram-cli command name.
+  + `--telegram-cli-port 1235`, telegram-cli listen port.
+  + `--telegram-cli-timeout 10`, telegram-cli request (like `load_photo`) timeout in seconds
 - Server side log
   + `--logger-ignore '&test0' '&test1'`, list of ignored regex, do not log contacts/groups whose names match
   + `--logger-mask '/tmp/telegram/$channel/%Y-%m-%d.log'`, format of log filenames
@@ -120,22 +122,6 @@ Multi-line messages: `!m line0\nline1\nline2`
 
 ![](https://maskray.me/static/2016-05-07-telegramircd/run.jpg)
 
-- `[Doc] $filename filesystem:https://web.telegram.org/temporary/t_filexxxxxxxxxxxxxxx`
-- `[Photo] filesystem:https://web.telegram.org/temporary/xxxxxxxxxxx`
-
-vte based terminal emulators expose the function for URI detection, but it does not recognize `filesystem:https://`. Replace `vte3-ng` with my `aur/vte3-ng-fullwidth-emoji` to support this URI scheme.
-
-## Build `app.js` from source
-
-```
-git clone https://github.com/zhukov/webogram
-cd webogram
-git checkout 9cf85f3a0d4e9f3e170eaed2b27ba6b0aed3952e
-patch -Np1 -i ../webogram.patch
-make
-cp dist/js/app.js /path/to/telegramircd/
-```
-
 ## Known issues
 
-- Messages delivered to a supergroup are different from messages to a group. They do not include the `random_id` field, it is hard to tell whether they are generated from the IRC client.
+- I do not know how to retrieve members of a `chat` (not `channel`).

@@ -3,7 +3,7 @@ from argparse import ArgumentParser, Namespace
 from aiohttp import web
 #from ipdb import set_trace as bp
 from datetime import datetime, timezone
-import aiohttp, asyncio, inspect, json, logging.handlers, os, pprint, random, re, \
+import aiohttp, asyncio, inspect, json, logging.handlers, mimetypes, os, pprint, random, re, \
     signal, socket, ssl, string, sys, tempfile, time, traceback, uuid, weakref
 
 logger = logging.getLogger('telegramircd')
@@ -36,22 +36,70 @@ class ExceptionHook(object):
         return self.instance(*args, **kwargs)
 
 
-### HTTP serving js & WebSocket server
+class TelegramCliFail(Exception):
+    def __init__(self, *msg):
+        super().__init__(*msg)
+
+### HTTP server
 
 class Web(object):
     instance = None
 
-    def __init__(self):
+    def __init__(self, options, tls):
         Web.instance = self
+        self.options = options
+        self.tls = tls
         self.queries = []
+        self.media_id2filename = {}
+
+    async def send_command(self, command, timeout=None):
+        if timeout is None:
+            timeout = self.options.telegram_cli_timeout
+        reader, writer = await asyncio.open_connection(host='localhost', port=self.options.telegram_cli_port, loop=self.loop)
+        writer.write((command+'\n').encode())
+        buf = b''
+        while 1:
+            try:
+                buf += await asyncio.wait_for(reader.read(4096), timeout=timeout)
+                data = json.loads(buf.decode().splitlines()[1])
+                if isinstance(data, dict) and data.get('result') == 'FAIL':
+                    raise TelegramCliFail(data['error'])
+            except asyncio.TimeoutError:
+                raise
+            except UnicodeDecodeError:
+                pass
+            except json.decoder.JSONDecodeError as ex:
+                if ex.msg == 'Unterminated string starting at' or ex.msg.startswith('Expecting'):
+                    continue
+                raise
+            else:
+                return data
+            finally:
+                writer.close()
+
+    async def handle_media(self, type, request):
+        id = request.match_info.get('id')
+        if id not in self.media_id2filename:
+            try:
+                data = await self.send_command('load_{} {}'.format(type, id))
+                self.media_id2filename[id] = data['result']
+            except asyncio.TimeoutError:
+                return aiohttp.web.Response(status=504, text='I used to live in 504A')
+            except TelegramCliFail as ex:
+                return aiohttp.web.Response(status=404, text=ex.args[0])
+        filename = self.media_id2filename[id]
+        try:
+            with open(filename, 'rb') as f:
+                return aiohttp.web.Response(body=f.read(),
+                        headers={'Content-Type': mimetypes.guess_type(filename)[0]})
+        except ex:
+            return aiohttp.web.Response(text=str(ex))
 
     async def handle_document(self, request):
-        id = request.match_info.get('id')
-        return aiohttp.web.Response(text='{}'.format(id))
+        return await self.handle_media('document', request)
 
     async def handle_photo(self, request):
-        id = request.match_info.get('id')
-        return aiohttp.web.Response(text='{}'.format(id))
+        return await self.handle_media('photo', request)
 
     async def handle_telegram_cli(self):
         decoder = json.JSONDecoder()
@@ -69,26 +117,17 @@ class Web(object):
                         buf = buf[i0:]
                     elif 0 <= i1 and (i1 < i0 or i0 < 0):
                         buf = buf[i1:]
-                        #print('+meow', buf[1], buf)
                         # not an array of objects
                         if len(buf) > 1 and chr(buf[1]) not in ']{':
                             buf = buf[2:]
                             continue
-                        #print('-meow', buf)
                     else:
                         break
                     try:
                         decoded = buf.decode()
                         data, j = decoder.raw_decode(decoded)
                         buf = decoded[j:].encode()
-                        if isinstance(data, list):
-                            query = self.queries.pop(0)
-                            #print('=', query)
-                            Server.instance.on_websocket(data, query)
-                        else:
-                            if data.get('result') == 'FAIL':
-                                self.queries.pop(0)
-                            Server.instance.on_websocket(data, None)
+                        Server.instance.on_telegram_cli(data)
                     except UnicodeDecodeError:
                         break
                     except json.decoder.JSONDecodeError as ex:
@@ -98,13 +137,13 @@ class Web(object):
                         buf = buf[1:]
                         break
             except AssertionError as ex:
-                info('WebSocket client error')
+                info('client error')
                 traceback.print_exc()
                 break
             except:
                 raise
 
-    def start(self, listens, port, tls, loop):
+    def start(self, listens, port, loop):
         self.loop = loop
         self.app = aiohttp.web.Application()
         self.app.router.add_route('GET', '/document/{id}', self.handle_document)
@@ -113,39 +152,85 @@ class Web(object):
         self.srv = []
         for i in listens:
             self.srv.append(loop.run_until_complete(
-                loop.create_server(self.handler, i, port, ssl=tls)))
-        self.proc = loop.run_until_complete(asyncio.create_subprocess_exec('telegram-cli', '--disable-colors', '--disable-readline', '--json',
+                loop.create_server(self.handler, i, port, ssl=self.tls)))
+        self.proc = loop.run_until_complete(asyncio.create_subprocess_exec(self.options.telegram_cli_command,
+            '--disable-colors', '--disable-readline', '--json', '-P', str(self.options.telegram_cli_port),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, loop=loop))
         self.loop.create_task(self.handle_telegram_cli())
 
     def stop(self):
         pass
 
-    def channel_info(self, channel_id):
-        self.proc.stdin.write('channel_info {}\n'.format(channel_id).encode())
+    async def channel_get_admins(self, id):
+        offset = 0
+        members = []
+        while 1:
+            data = await self.send_command('channel_get_admins {} 100 {}\n'.format(id, offset))
+            if len(data):
+                members.extend(data)
+                offset = len(members)
+            else:
+                break
+        for client in Server.instance.clients:
+            client.id2special_room[id].update_admins(members)
 
-    def channel_get_admins(self, channel_id, offset, admins):
-        self.queries.append({'type': 'channel_get_admins', 'id': channel_id, 'offset': offset, 'admins': admins})
-        self.proc.stdin.write('channel_get_admins {} 100 {}\n'.format(channel_id, offset).encode())
+    async def channel_get_members(self, id):
+        offset = 0
+        members = []
+        try:
+            while 1:
+                data = await self.send_command('channel_get_members {} 100 {}\n'.format(id, offset))
+                if len(data):
+                    members.extend(data)
+                    offset = len(members)
+                else:
+                    break
+            for client in Server.instance.clients:
+                client.id2special_room[id].update_members(members)
+        except TelegramCliFail as ex:
+            pass
 
-    def channel_get_members(self, channel_id, offset, members):
-        self.queries.append({'type': 'channel_get_members', 'id': channel_id, 'offset': offset, 'members': members})
-        self.proc.stdin.write('channel_get_members {} 100 {}\n'.format(channel_id, offset).encode())
+    async def channel_info(self, id):
+        for data in await self.send_command('channel_info '+id):
+            for client in Server.instance.clients:
+                self.channel(client, data)
 
-    def channel_list(self):
-        self.queries.append(None)
-        self.proc.stdin.write(b'channel_list\n')
+    async def channel_list(self):
+        for data in await self.send_command('channel_list'):
+            for client in Server.instance.clients:
+                self.channel(client, data)
 
-    def contact_list(self):
-        self.queries.append(None)
-        self.proc.stdin.write(b'contact_list\n')
+    async def contact_list(self):
+        for data in await self.send_command('channel_list'):
+            for client in Server.instance.clients:
+                self.user(client, data)
 
-    def dialog_list(self):
-        self.queries.append(None)
-        self.proc.stdin.write(b'dialog_list\n')
+    async def dialog_list(self):
+        for data in await self.send_command('dialog_list'):
+            for client in Server.instance.clients:
+                if data['peer_type'] == 'chat':
+                    self.chat(client, data)
+                elif data['peer_type'] == 'channel':
+                    self.channel(client, data)
+                elif data['peer_type'] == 'user':
+                    self.user(client, data)
 
-    def get_self(self):
-        self.proc.stdin.write(b'get_self\n')
+    async def get_self(self):
+        data = await self.send_command('get_self')
+        for client in Server.instance.clients:
+            client.id = data['id']
+
+    def channel(self, client, data):
+        debug('channel: ' + ', '.join(k + ':' + repr(data.get(k)) for k in ['id', 'title']))
+        client.ensure_special_room(data)
+
+    def chat(self, client, data):
+        debug('chat: ' + ', '.join(k + ':' + repr(data.get(k)) for k in ['id', 'title']))
+        client.ensure_special_room(data)
+
+    def user(self, client, data):
+        debug('user: ' + ', '.join(k + ':' + repr(data.get(k)) for k in ['id', 'print_name', 'username']))
+        client.ensure_special_user(data)
 
     async def send_file(self, peer, filename, body):
         with tempfile.TemporaryDirectory() as directory:
@@ -174,6 +259,35 @@ def irc_escape(s):
     s = re.sub(r'&amp;?', '', s)   # chatroom name may include `&`
     s = re.sub(r'<[^>]*>', '', s)  # remove emoji
     return re.sub(r'[^-\w$%^*()=./]', '', s)
+
+
+def irc_text(client, sender, to, text, date=None):
+    if 'server-time' in client.capabilities:
+        client.write('@time={}Z :{} PRIVMSG {} :{}'.format(
+            datetime.fromtimestamp(date, timezone.utc).strftime('%FT%T.%f')[:23],
+            sender.prefix, to, text))
+    else:
+        client.write(':{} PRIVMSG {} :{}'.format(
+            sender.prefix, to, text))
+
+def irc_message(client, sender, to, log, data):
+    if 'media' in data:
+        if data['media']['type'] == 'document':
+            client.server.irc_log(log, datetime.fromtimestamp(data['date']), sender, '[Document] {}'.format(data['id']))
+            irc_text(client, sender, to,
+                    '[Document] http{}://{}/document/{}'.format('s' if Web.instance.tls else '', Web.instance.options.http_host, data['id']),
+                    data['date'])
+        elif data['media']['type'] == 'photo':
+            client.server.irc_log(log, datetime.fromtimestamp(data['date']), sender, '[Photo] {}'.format(data['id']))
+            irc_text(client, sender, to,
+                    '[Photo] http{}://{}/photo/{}'.format('s' if Web.instance.tls else '', Web.instance.options.http_host, data['id']),
+                    data['date'])
+    elif 'text' in data:
+        for line in data['text'].splitlines():
+            client.server.irc_log(log, datetime.fromtimestamp(data['date']), sender, line)
+            irc_text(client, sender, to, line, data['date'])
+    else:
+        irc_text(client, sender, to, '[Unknown] {}'.format(data), data['date'])
 
 ### Commands
 
@@ -455,34 +569,15 @@ USER_FLAG_MUTUAL_CONTACT = 1<<12
 
 class SpecialCommands:
     @staticmethod
-    def channel(client, data):
-        debug('channel: ' + ', '.join(k + ':' + repr(data.get(k)) for k in ['id', 'title']))
-        client.ensure_special_room(data)
-
-    @staticmethod
-    def chat(client, data):
-        debug('chat: ' + ', '.join(k + ':' + repr(data.get(k)) for k in ['id', 'title']))
-        client.ensure_special_room(data)
-
-    @staticmethod
     def message(client, data):
         if data['to']['peer_type'] == 'user':
             user = client.ensure_special_user(data['to'])
             if user:
-                user.on_websocket_message(data)
+                user.on_telegram_cli_message(data)
             else:
-                client.on_websocket_message(data)
+                client.on_telegram_cli_message(data)
         elif data['to']['peer_type'] in ('channel', 'chat'):
-            client.ensure_special_room(data['to']).on_websocket_message(data)
-
-    @staticmethod
-    def self(client, data):
-        client.id = data['id']
-
-    @staticmethod
-    def user(client, data):
-        debug('user: ' + ', '.join(k + ':' + repr(data.get(k)) for k in ['id', 'print_name', 'username']))
-        client.ensure_special_user(data)
+            client.ensure_special_room(data['to']).on_telegram_cli_message(data)
 
     # FIXME old ---
 
@@ -490,11 +585,6 @@ class SpecialCommands:
     def room_admins(client, channel_id, admins):
         if channel_id in client.id2special_room:
             client.id2special_room[channel_id].update_admins(admins)
-
-    @staticmethod
-    def room_members(client, channel_id, members):
-        if channel_id in client.id2special_room:
-            client.id2special_room[channel_id].update_members(members)
 
     @staticmethod
     def send_file_message_nak(client, data):
@@ -967,7 +1057,15 @@ class SpecialChannel(Channel):
             if self.joined:
                 return False
             self.joined = True
-            Web.instance.channel_get_members(self.id, 0, [])
+
+            async def participants():
+                try:
+                    await Web.instance.channel_get_members(self.id)
+                    await Web.instance.channel_get_admins(self.id)
+                except:
+                    pass
+
+            self.client.server.loop.create_task(participants())
             super().on_join(member)
         else:
             if member in self.members:
@@ -1014,7 +1112,7 @@ class SpecialChannel(Channel):
         for member in members:
             member.on_who_member(client, self.name)
 
-    def on_websocket_message(self, data):
+    def on_telegram_cli_message(self, data):
         if not self.joined and 'm' not in self.mode:
             if self.client.options.join == 'auto' and self.idle or \
                     self.client.options.join == 'new':
@@ -1027,21 +1125,7 @@ class SpecialChannel(Channel):
             return
         if sender not in self.members:
             self.on_join(sender)
-        if 'media' in data:
-            if data['media']['type'] == 'photo':
-                pass
-        elif 'text' in data:
-            for line in data['text'].splitlines():
-                self.client.server.irc_log(self, datetime.fromtimestamp(data['date']), sender, line)
-                if 'server-time' in self.client.capabilities:
-                    self.client.write('@time={}Z :{} PRIVMSG {} :{}'.format(
-                        datetime.fromtimestamp(data['date'], timezone.utc).strftime('%FT%T.%f')[:23],
-                        sender.prefix, self.name, line))
-                else:
-                    self.client.write(':{} PRIVMSG {} :{}'.format(
-                        sender.prefix, self.name, line))
-        else:
-            print('=====', data)
+        irc_message(self.client, sender, self.name, self, data)
 
 
 class Client:
@@ -1058,11 +1142,11 @@ class Client:
         self.nick = None
         self.registered = False
         self.mode = ''
-        self.channels = {}              # joined, name -> channel
-        self.name2special_room = {}      # name -> Telegram chatroom
-        self.id2special_room = {}  # id -> SpecialChannel
-        self.nick2special_user = {}      # nick -> IRC user or Telegram user (friend or room contact)
-        self.id2special_user = {}  # id -> SpecialUser
+        self.channels = {}           # joined, name -> channel
+        self.name2special_room = {}  # name -> Telegram chatroom
+        self.id2special_room = {}    # id -> SpecialChannel
+        self.nick2special_user = {}  # nick -> IRC user or Telegram user (friend or room contact)
+        self.id2special_user = {}    # id -> SpecialUser
         self.id = 0
         self.capabilities = set()
         self.authenticated = False
@@ -1308,11 +1392,18 @@ class Client:
                     status_channel = StatusChannel.instance
                     RegisteredCommands.join(self, status_channel.name)
                     status_channel.respond(self, 'Visit web.telegram.org and then you will see your friend list in this channel')
-                    Web.instance.get_self()
-                    Web.instance.channel_list()
-                    Web.instance.contact_list()
-                    Web.instance.dialog_list()
-                    #Web.instance.channel_get_members('$050000007aa8613f653848c956b2b8f8', 0, [])
+
+                    async def init():
+                        try:
+                            await Web.instance.get_self()
+                            await Web.instance.channel_list()
+                            await Web.instance.contact_list()
+                            await Web.instance.dialog_list()
+                        except:
+                            pass
+                        #Web.instance.channel_get_members('$050000007aa8613f653848c956b2b8f8')
+
+                    self.server.loop.create_task(init())
 
     async def handle_irc(self):
         sent_ping = False
@@ -1397,39 +1488,26 @@ class Client:
                      ' '.join(name for name in
                               client.channels.keys() & self.channels.keys()))
 
-    def on_websocket(self, data, query):
-        if not query:
-            if isinstance(data, list):
-                for x in data:
-                    name = x.get('event') or x.get('peer_type')
-                    if type(SpecialCommands.__dict__.get(name)) == staticmethod:
-                        getattr(SpecialCommands, name)(self, x)
-            else:
-                name = data.get('event') or data.get('peer_type')
+    def on_telegram_cli(self, data):
+        if isinstance(data, list):
+            for x in data:
+                name = x.get('event') or x.get('peer_type')
                 if type(SpecialCommands.__dict__.get(name)) == staticmethod:
-                    getattr(SpecialCommands, name)(self, data)
-        elif query['type'] == 'channel_get_admins':
-            admins = query['admins']+data
-            if len(data):
-                Web.instance.channel_get_admins(query['id'], query['offset']+100, admins)
-            else:
-                SpecialCommands.room_admins(self, query['id'], admins)
-        elif query['type'] == 'channel_get_members':
-            members = query['members']+data
-            if len(data):
-                Web.instance.channel_get_members(query['id'], query['offset']+100, members)
-            else:
-                SpecialCommands.room_members(self, query['id'], members)
+                    getattr(SpecialCommands, name)(self, x)
+        else:
+            name = data.get('event') or data.get('peer_type')
+            if type(SpecialCommands.__dict__.get(name)) == staticmethod:
+                getattr(SpecialCommands, name)(self, data)
 
-    def on_websocket_open(self, peername):
+    def on_telegram_cli_open(self, peername):
         status = StatusChannel.instance
-        #self.status('WebSocket client connected from {}'.format(peername))
+        #self.status('client connected from {}'.format(peername))
 
-    def on_websocket_close(self, peername):
+    def on_telegram_cli_close(self, peername):
         # PART all special channels, these chatrooms will be garbage collected
         for room in self.name2special_room.values():
             if room.joined:
-                room.on_part(self, 'WebSocket client disconnection')
+                room.on_part(self, 'client disconnection')
         self.name2special_room.clear()
         self.id2special_room.clear()
 
@@ -1440,23 +1518,12 @@ class Client:
         status = StatusChannel.instance
         status.shadow_members.get(self, set()).clear()
         if self in status.members:
-            status.on_part(self, 'WebSocket client disconnected from {}'.format(peername))
+            status.on_part(self, 'client disconnected from {}'.format(peername))
             status.on_join(self)
 
-    def on_websocket_message(self, data):
+    def on_telegram_cli_message(self, data):
         sender = self.ensure_special_user(data['from'])
-        for line in data['text'].splitlines():
-            if 'is_history' in data:
-                if not self.options.history:
-                    return
-            self.server.irc_log(sender, datetime.fromtimestamp(data['date']), sender, line)
-            if 'server-time' in self.capabilities:
-                self.write('@time={}Z :{} PRIVMSG {} :{}'.format(
-                    datetime.fromtimestamp(data['date'], timezone.utc).strftime('%FT%T.%f')[:23],
-                    sender.prefix, self.nick, line))
-            else:
-                self.write(':{} PRIVMSG {} :{}'.format(
-                    sender.prefix, self.nick, line))
+        irc_message(self, sender, self.nick, sender, data)
 
 
 class SpecialUser:
@@ -1539,17 +1606,8 @@ class SpecialUser:
         client.reply('311 {} {} {} {} * :{}', client.nick, self.nick,
                      self.id, im_name, self.print_name)
 
-    def on_websocket_message(self, data):
-        if 'text' in data:
-            for line in data['text'].splitlines():
-                self.client.server.irc_log(self, datetime.fromtimestamp(data['date']), self.client, line)
-                if 'server-time' in self.client.capabilities:
-                    self.client.write('@time={}Z :{} PRIVMSG {} :{}'.format(
-                        datetime.fromtimestamp(data['date'], timezone.utc).strftime('%FT%T.%f')[:23],
-                        self.client.prefix, self.nick, line))
-                else:
-                    self.client.write(':{} PRIVMSG {} :{}'.format(
-                        self.client.prefix, self.nick, line))
+    def on_telegram_cli_message(self, data):
+        irc_message(self.client, self.client, self.nick, self, data)
 
 
 class Server:
@@ -1639,11 +1697,9 @@ class Server:
             i.close()
             self.loop.run_until_complete(i.wait_closed())
 
-    ## WebSocket
-    def on_websocket(self, data, query):
-        #print('+++', data)
+    def on_telegram_cli(self, data):
         for client in self.clients:
-            client.on_websocket(data, query)
+            client.on_telegram_cli(data)
 
     def irc_log(self, channel, local_time, sender, line):
         if self.options.logger_mask is None:
@@ -1670,12 +1726,13 @@ def main():
     ap.add_argument('--dcc-send', type=int, default=10*1024*1024, help='size limit receiving from DCC SEND. 0: disable DCC SEND')
     ap.add_argument('--heartbeat', type=int, default=30, help='time to wait for IRC commands. The server will send PING and close the connection after another timeout of equal duration if no commands is received.')
     ap.add_argument('-H', '--history', default=True, help='receive history messages, default: true')
-    ap.add_argument('--http-cert', help='TLS certificate for HTTPS/WebSocket over TLS. You may concatenate certificate+key, sp
-cify a single PEM file and omit `--http-key`. Use HTTP if neither --http-cert nor --http-key is specified')
-    ap.add_argument('--http-key', help='TLS key for HTTPS/WebSocket over TLS')
+    ap.add_argument('--http-cert', help='TLS certificate for HTTPS over TLS. You may concatenate certificate+key, specify a single PEM file and omit `--http-key`. Use HTTP if neither --http-cert nor --http-key is specified')
+    ap.add_argument('--http-host', default='localhost',
+                    help='Show file links as http://$host/photo/$id')
+    ap.add_argument('--http-key', help='TLS key for HTTPS over TLS')
     ap.add_argument('--http-listen', nargs='*',
-                    help='HTTP/WebSocket listen addresses (overriding --listen)')
-    ap.add_argument('--http-port', type=int, default=9003, help='HTTP/WebSocket listen port, default: 9003')
+                    help='HTTP listen addresses (overriding --listen)')
+    ap.add_argument('--http-port', type=int, default=9003, help='HTTP listen port, default: 9003')
     ap.add_argument('-i', '--ignore', nargs='*',
                     help='list of ignored regex, do not auto join to a '+im_name+' chatroom whose channel name(generated from DisplayName) matches')
     ap.add_argument('-I', '--ignore-topic', nargs='*',
@@ -1686,16 +1743,22 @@ cify a single PEM file and omit `--http-key`. Use HTTP if neither --http-cert no
                     help='IRC listen addresses (overriding --listen)')
     ap.add_argument('--irc-password', default='', help='Set the IRC connection password')
     ap.add_argument('--irc-port', type=int, default=6669,
-                    help='IRC server listen port. defalt: 6669')
+                    help='IRC server listen port. default: 6669')
     ap.add_argument('-j', '--join', choices=['all', 'auto', 'manual', 'new'], default='auto',
                     help='join mode for '+im_name+' chatrooms. all: join all after connected; auto: join after the first message arrives; manual: no automatic join; new: join whenever messages arrive (even if after /part); default: auto')
     ap.add_argument('-l', '--listen', nargs='*', default=['127.0.0.1'],
-                    help='IRC/HTTP/WebSocket listen addresses, default: 127.0.0.1')
+                    help='IRC/HTTP listen addresses, default: 127.0.0.1')
     ap.add_argument('--logger-ignore', nargs='*', help='list of ignored regex, do not log contacts/chatrooms whose names match')
     ap.add_argument('--logger-mask', help='WeeChat logger.mask.irc')
     ap.add_argument('--logger-time-format', default='%H:%M', help='WeeChat logger.file.time_format')
     ap.add_argument('--password', help='admin password')
     ap.add_argument('-q', '--quiet', action='store_const', const=logging.WARN, dest='loglevel')
+    ap.add_argument('--telegram-cli-command', default='telegram-cli',
+                    help='telegram-cli command name. default: telegram-cli')
+    ap.add_argument('--telegram-cli-port', type=int, default=1235,
+                    help='telegram-cli listen port. default: 1235')
+    ap.add_argument('--telegram-cli-timeout', type=float, default=10,
+                    help='telegram-cli request (like load_photo) timeout in seconds. default: 10')
     ap.add_argument('-v', '--verbose', action='store_const', const=logging.DEBUG, dest='loglevel')
     options = ap.parse_args()
 
@@ -1728,11 +1791,11 @@ cify a single PEM file and omit `--http-key`. Use HTTP if neither --http-cert no
     if options.debug:
         sys.excepthook = ExceptionHook()
     server = Server(options)
-    web = Web()
+    web = Web(options, http_tls)
 
     server.start(loop, irc_tls)
     web.start(options.http_listen if options.http_listen else options.listen,
-              options.http_port, http_tls, loop)
+              options.http_port, loop)
     try:
         loop.run_forever()
     except KeyboardInterrupt:
