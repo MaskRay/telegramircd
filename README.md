@@ -5,7 +5,7 @@ telegramircd is an IRC server that enables IRC clients to send and receive messa
 ## Installation
 
 - `>=python-3.5`, `pip install --user -r requirements.txt`
-- `telegram-cli`. telegramircd uses the JSON output of telegram-cli to communicate with Telegram servers. Run `telegram-cli` and login to get credential.
+- `telegram-cli`. telegramircd uses the JSON output of telegram-cli to communicate with Telegram servers. Run `telegram-cli` and login to get credential before using telegramircd.
 
 ### Arch Linux
 
@@ -16,10 +16,10 @@ telegramircd is an IRC server that enables IRC clients to send and receive messa
 
 The IRC server listens on 127.0.0.1:6669 (IRC) and 127.0.0.1:9003 (HTTP) by default.
 
-Specify `--http-host 127.1:9003` to display file links as `http://127.1:9003/photo/$id`.
-File links can be served via HTTPS with `--http-key` and `--http-cert`: `/usr/bin/telegramircd --http-key /etc/telegramircd/key.pem --http-cert /etc/telegramircd/cert.pem --http-host 127.1:9003`. File links will be shown as `https://127.1:9003/photo/$id`.
+Specify `--http-url http://127.1:9003` to display document links as `http://127.1:9003/document/$id`.
+File links can be served via HTTPS with `--http-key` and `--http-cert`: `telegramircd --http-key /etc/telegramircd/key.pem --http-cert /etc/telegramircd/cert.pem --http-url https://127.1:9003`. File links will be shown as `https://127.1:9003/document/$id`.
 
-If you run the server on another machine, it is recommended to set up IRC over TLS and an IRC connection password: `/usr/bin/telegramircd --http-key /etc/telegramircd/key.pem --http-cert /etc/telegramircd/cert.pem --irc-cert /path/to/irc.key --irc-key /path/to/irc.cert --irc-password yourpassword`.
+If you run the server on another machine, it is recommended to set up IRC over TLS and an IRC connection password: `telegramircd --http-key /etc/telegramircd/key.pem --http-cert /etc/telegramircd/cert.pem --irc-cert /path/to/irc.key --irc-key /path/to/irc.cert --irc-password yourpassword`.
 
 You can reuse the HTTPS certificate+key as IRC over TLS certificate+key. If you use WeeChat and find it difficult to set up a valid certificate (gnutls checks the hostname), type the following lines in WeeChat:
 ```
@@ -32,7 +32,7 @@ My `/etc/systemd/system/telegramircd.service`:
 ```systemd
 [Service]
 User=ray
-ExecStart=/usr/bin/telegramircd --join new --http-key /etc/telegramircd/key.pem --http-cert /etc/telegramircd/cert.pem --http-host file_links_host:12345 --logger-mask '/tmp/telegramircd/$channel/%%Y-%%m-%%d.log' --ignore 污水群
+ExecStart=/usr/bin/telegramircd --join new --http-url https://i_use_nginx --logger-mask '/tmp/telegramircd/$channel/%%Y-%%m-%%d.log' --telegram-cli-poll-channels 1031857103 --ignore 污水群
 ```
 
 N.B. in systemd.unit files, use `%%` in place of `%` to specify a single percent sign.
@@ -59,6 +59,11 @@ You will join `+telegram` channel automatically and find your contact list there
 
 - `help`
 - `status`, mutual contact list、group/supergroup list
+- `eval $expr`: eval the Python expression `$expr`. Examples:
+  ```
+  eval client.peer_id2special_room
+  eval client.peer_id2special_user
+  ```
 
 ## Server options
 
@@ -70,7 +75,7 @@ You will join `+telegram` channel automatically and find your contact list there
 - History mode. The default is to receive history messages, specify `--history false` to turn off the mode.
 - HTTP related options
   + `--http-cert cert.pem`, TLS certificate for HTTPS. You may concatenate certificate+key, specify a single PEM file and omit `--http-key`. Use HTTP if neither --http-cert nor --http-key is specified.
-  + `--http-host $host`, Show file links as http://$host/photo/$id .
+  + `--http-url http://localhost`, Show file links as http://localhost/document/$id .
   + `--http-key key.pem`, TLS key for HTTPS.
   + `--http-listen 127.1 ::1`, change HTTPS listen address to `127.1` and `::1`, overriding `--listen`.
   + `--http-port 9003`, change HTTPS listen port to 9003.
@@ -85,6 +90,9 @@ You will join `+telegram` channel automatically and find your contact list there
   + `--telegram-cli-command telegram-cli`, telegram-cli command name.
   + `--telegram-cli-port 1235`, telegram-cli listen port.
   + `--telegram-cli-timeout 10`, telegram-cli request (like `load_photo`) timeout in seconds
+  + `--telegram-cli-poll-channels 1031857103`, telegram-cli cannot receive messages in some channels <https://github.com/vysheng/tg/issues/1135>, specify their `peer_id` to poll messages with the `history` command
+  + `--telegram-cli-poll-interval 10`, interval in seconds
+  + `--telegram-cli-poll-limit 10`, `history channel#{peer_id} {telegram_cli_poll_limit}`
 - Server side log
   + `--logger-ignore '&test0' '&test1'`, list of ignored regex, do not log contacts/groups whose names match
   + `--logger-mask '/tmp/telegram/$channel/%Y-%m-%d.log'`, format of log filenames
@@ -116,12 +124,24 @@ Supported IRC commands:
 - `/query $nick`, open a chat window with `$nick`.
 - `/who $channel`, see the member list.
 
-Multi-line messages: `!m line0\nline1\nline2`
+- Multi-line messages: `!m line0\nline1\nline2`
+- Reply to the message at 12:34:SS: `@1234 !m multi\nline\nreply`
+- Reply to the message at 12:34:56: `!m @123456 multi\nline\nreply`
+- Reply to the penultimate message in this channel: `@2 reply`
 
 ## Demo
 
-![](https://maskray.me/static/2016-05-07-telegramircd/run.jpg)
+![](https://maskray.me/static/2016-05-07-telegramircd/telegramircd.jpg)
 
 ## Known issues
 
-- I do not know how to retrieve members of a `chat` (not `channel`).
+- telegram-cli cannot receive messages (most messages if not all, `tgl/mtproto-client.c:rpc_execute`) from some channels <https://github.com/vysheng/tg/issues/1135>.
+  Use `/list` to get their `peer_id`:
+
+  ```
+  &test0(0): channel#1000000000 test0
+  &test1(0): channel#1000000001 test1
+  End of LIST
+  ```
+
+  Specify `--telegram-cli-poll-channels 1000000000 1000000001` to make telegramircd poll messages with the `history channel#{channel_id} 10` command.

@@ -1,10 +1,6 @@
 # telegramircd
 
-telegramircd类似于bitlbee，在web.telegram.org和IRC间建起桥梁，可以使用IRC客户端收发朋友、群消息。
-
-## 原理
-
-修改<https://web.telegram.org>用的JS，通过WebSocket把信息发送到服务端，服务端兼做IRC服务端，把IRC客户端的命令通过WebSocket传送到网页版JS执行。未实现IRC客户端，因此无法把群的消息转发到另一个IRC服务器(打通两个群的bot)。
+telegramircd类似于bitlbee，可以用IRC客户端收发Telegram消息。
 
 ## 安装
 
@@ -13,15 +9,37 @@ telegramircd类似于bitlbee，在web.telegram.org和IRC间建起桥梁，可以
 
 ### Arch Linux
 
-安装<https://aur.archlinux.org/packages/telegramircd-git>，会自动在`/etc/telegramircd/`下生成自签名证书(见下文)，导入浏览器即可。
+- `aur/telegramircd-git`
+- `aur/telegram-cli-git`
+- 根据模板`/lib/systemd/system/telegramircd.service`创建`/etc/systemd/system/telegramircd.service`
+- `systemctl start telegramircd`
 
-### 其他发行版
+The IRC server listens on 127.0.0.1:6669 (IRC) and 127.0.0.1:9003 (HTTP) by default.
 
-- `openssl req -newkey rsa:2048 -nodes -keyout key.pem -x509 -out cert.pem -subj '/CN=127.0.0.1' -dates 9999`创建密钥与证书。
-- 把证书导入浏览器，见下文
-- `./telegramircd.py --tls-cert cert.pem --tls-key key.pem`，会监听127.1:6669的IRC和127.1:9003的HTTPS(兼WebSocket over TLS)
+Specify `--http-url http://127.1:9003` to display document links as `http://127.1:9003/document/$id`.
+File links can be served via HTTPS with `--http-key` and `--http-cert`: `telegramircd --http-key /etc/telegramircd/key.pem --http-cert /etc/telegramircd/cert.pem --http-url https://127.1:9003`. File links will be shown as `https://127.1:9003/document/$id`.
 
-### 浏览器设置
+If you run the server on another machine, it is recommended to set up IRC over TLS and an IRC connection password: `telegramircd --http-key /etc/telegramircd/key.pem --http-cert /etc/telegramircd/cert.pem --irc-cert /path/to/irc.key --irc-key /path/to/irc.cert --irc-password yourpassword`.
+
+You can reuse the HTTPS certificate+key as IRC over TLS certificate+key. If you use WeeChat and find it difficult to set up a valid certificate (gnutls checks the hostname), type the following lines in WeeChat:
+```
+set irc.server.telegram.ssl on
+set irc.server.telegram.ssl_verify off
+set irc.server.telegram.password yourpassword`
+```
+
+My `/etc/systemd/system/telegramircd.service`:
+```systemd
+[Service]
+User=ray
+ExecStart=/usr/bin/telegramircd --join new --http-url https://i_use_nginx --logger-mask '/tmp/telegramircd/$channel/%%Y-%%m-%%d.log' --telegram-cli-poll-channels 1031857103 --ignore 污水群
+```
+
+N.B. in systemd.unit files, use `%%` in place of `%` to specify a single percent sign.
+
+### 导入自签名证书到浏览器
+
+`openssl req -newkey rsa:2048 -nodes -keyout key.pem -x509 -out cert.pem -subj '/CN=127.0.0.1' -dates 9999`.
 
 Chrome/Chromium
 
