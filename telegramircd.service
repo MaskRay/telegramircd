@@ -1,19 +1,12 @@
 [Unit]
-Description=Bring web.telegram.org to IRC clients
+Description=IRC server capable of controlling Telegram
 Documentation=https://github.com/MaskRay/telegramircd
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/telegramircd
-
-#server side log, N.B. use '%%' in place of '%' to specify a single percent sign, see man 5 systemd.unit
-#ExecStart=/usr/bin/telegramircd --logger-mask '/tmp/telegramircd/$channel/%%Y-%%m-%%d.log'
-
-#Display document links as https://127.1/document/$id
-#ExecStart=/usr/bin/telegramircd --http-host https://127.1 --http-cert /etc/telegramircd/cert.pem --http-key /etc/telegramircd/key.pem
-
-#IRC over TLS + connection password
-#ExecStart=/usr/bin/telegramircd --irc-cert /etc/telegramircd/irc-cert.pem --irc-key /etc/telegramircd/irc-key.pem --irc-password yourpassword
+User=nobody
+Group=nobody
+ExecStart=/usr/bin/telegramircd -c /etc/telegramircd/config
 
 [Install]
 WantedBy=multi-user.target

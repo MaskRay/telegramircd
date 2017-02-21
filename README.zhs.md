@@ -5,8 +5,8 @@ telegramircd类似于bitlbee，可以用IRC客户端收发Telegram消息。
 ### Arch Linux
 
 - `aur/telegramircd-git`
-- `aur/telegram-cli-git`. telegramircd uses the JSON output of telegram-cli to communicate with Telegram servers. Run `telegram-cli` and login to get credential before using telegramircd.
-- 根据模板`/lib/systemd/system/telegramircd.service`创建`/etc/systemd/system/telegramircd.service`
+- `aur/telegram-cli-git`。telegramircd使用telegram-cli和Telegram服务器通信。运行`telegram-cli`以获取登录凭据
+- 根据模板`/lib/systemd/system/telegramircd.service`创建`/etc/systemd/system/telegramircd.service`。修改`User=`和`Group=`，否则`telegram-cli`无法加载登录凭据
 - `systemctl start telegramircd`
 
 IRC服务器默认监听127.0.0.1:6669 (IRC)和127.0.0.1:9000 (HTTPS + WebSocket over TLS)。

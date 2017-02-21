@@ -1,0 +1,41 @@
+# See https://pypi.python.org/pypi/ConfigArgParse for syntax
+
+# HTTP/WebSocket related options
+http-cert: /etc/telegramircd/cert.pem
+http-key: /etc/telegramircd/key.pem
+http-listen: [127.0.0.1, ::1]
+http-port: 9003
+# Display document links as https://127.1/document/$id
+http-url: https://127.1
+
+#ignore: [channel_name_regex0, channel_name_regex1]
+#ignore-topic: [group_name_regex0]
+
+# IRC related options
+#irc-cert: /etc/telegramircd/irc-cert.pem
+#irc-key: /etc/telegramircd/irc-key.pem
+irc-listen: [127.0.0.1, ::1]
+# reserved nicks for clients
+#irc-nicks: [ray]
+# IRC connection password
+#irc-password:
+irc-port: 6669
+
+# join mode
+join: new
+
+# logger
+#logger-ignore:
+#logger-mask: /tmp/telegramircd/$channel/%Y-%m-%d.log
+#logger-time-format: %H:%M
+
+# telegram-cli
+#telegram-cli-command: telegram-cli
+#telegram-cli-port: 1235
+#telegram-cli-timeout: 10
+# telegram-cli cannot receive messages in some channels https://github.com/vysheng/tg/issues/1135 , specify their `peer_id` to poll messages with the `history` command
+#telegram-cli-poll-channels: [123, 456]
+# history channel#{peer_id} {telegram_cli_poll_limit}
+#telegram-cli-poll-limit: 10
+# interval in seconds, default: 10
+#telegram-cli-poll-interval: 10
