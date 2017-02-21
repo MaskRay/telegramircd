@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-from argparse import ArgumentParser, Namespace
-from aiohttp import web
+from configargparse import ArgParser, Namespace
 #from ipdb import set_trace as bp
 from collections import deque
 from datetime import datetime, timezone
 from itertools import chain
-import aiohttp, asyncio, inspect, json, logging.handlers, mimetypes, os, pprint, random, re, \
-    signal, socket, ssl, string, sys, tempfile, time, traceback, uuid, weakref
+import aiohttp.web, asyncio, inspect, json, logging.handlers, mimetypes, os, pprint, random, re, \
+    shlex, signal, socket, ssl, string, sys, tempfile, time, traceback, uuid, weakref
 
 logger = logging.getLogger('telegramircd')
 im_name = 'Telegram'
@@ -156,7 +155,7 @@ class Web(object):
         for i in listens:
             self.srv.append(loop.run_until_complete(
                 loop.create_server(self.handler, i, port, ssl=self.tls)))
-        self.proc = loop.run_until_complete(asyncio.create_subprocess_exec(options.telegram_cli_command,
+        self.proc = loop.run_until_complete(asyncio.create_subprocess_exec(*shlex.split(options.telegram_cli_command),
             '--disable-colors', '--disable-readline', '--json', '-P', str(options.telegram_cli_port),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, loop=loop))
         loop.create_task(self.handle_telegram_cli())
@@ -787,7 +786,7 @@ class SpecialCommands:
     @staticmethod
     def service(data):
         if data['action']['type'] == 'chat_add_user':
-            user = server.ensure_special_user(data['from'])
+            user = server.ensure_special_user(data['action']['user'])
             if user == server: return
             channel = server.ensure_special_room(data['to'])
             if user not in channel.members:
@@ -989,7 +988,7 @@ class StatusChannel(Channel):
             self.respond(client, 'help')
             self.respond(client, '  display this help')
             self.respond(client, 'eval expression')
-            self.respond(client, '  eval Python expression')
+            self.respond(client, '  eval a Python expression')
             self.respond(client, 'status [pattern]')
             self.respond(client, '  show contacts/chats/channels')
         elif msg.startswith('status'):
@@ -998,7 +997,7 @@ class StatusChannel(Channel):
             if len(ary) > 1:
                 pattern = ary[1]
             self.respond(client, 'IRC channels:')
-            for name, room in client.channels.items():
+            for name, room in server.channels.items():
                 if pattern is not None and pattern not in name: continue
                 if isinstance(room, StandardChannel):
                     self.respond(client, '  ' + name)
@@ -1309,6 +1308,8 @@ class Client:
         self.writer = writer
         peer = writer.get_extra_info('socket').getpeername()
         self.host = peer[0]
+        if self.host[0] == ':':
+            self.host = '[{}]'.format(self.host)
         self.user = None
         self.nick = None
         self.registered = False
@@ -1848,7 +1849,8 @@ class Server:
 
 
 def main():
-    ap = ArgumentParser(description='telegramircd brings Telegram to IRC clients')
+    ap = ArgParser(description='telegramircd brings Telegram to IRC clients')
+    ap.add('-c', '--config', is_config_file=True, help='config file path')
     ap.add_argument('-d', '--debug', action='store_true', help='run ipdb on uncaught exception')
     ap.add_argument('--dcc-send', type=int, default=10*1024*1024, help='size limit receiving from DCC SEND. 0: disable DCC SEND')
     ap.add_argument('--heartbeat', type=int, default=30, help='time to wait for IRC commands. The server will send PING and close the connection after another timeout of equal duration if no commands is received.')
