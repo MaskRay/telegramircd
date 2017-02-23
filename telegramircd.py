@@ -721,8 +721,6 @@ class SpecialCommands:
             to = server.ensure_special_user(data['to'])
         elif data['to']['peer_type'] in ('channel', 'chat'):
             to = server.ensure_special_room(data['to'])
-        if sender == server and ('media' not in data and data['text'] == to.last_text_by_me):
-            return
 
         if 'media' in data:
             type = data['media']['type']
@@ -761,17 +759,21 @@ class SpecialCommands:
                 for client in server.auth_clients():
                     line = '\x0315「Re {}: {}」\x0f{}'.format(client.nick if user == server else user.nick, refer_text, line)
                     break
-            for client in server.auth_clients():
-                where = sender if to == server else to
-                irc_log(where, client if where == server else where, datetime.fromtimestamp(data['date']), client if sender == server else sender, line)
-                break
+            if to == server or sender == server:
+                client = server.preferred_client()
+                if client:
+                    where = sender if to == server else to
+                    irc_log(where, client if where == server else where, datetime.fromtimestamp(data['date']), client if sender == server else sender, line)
+            else:
+                irc_log(to, to, datetime.fromtimestamp(data['date']), sender, line)
             if isinstance(to, SpecialChannel):
                 for c in server.auth_clients():
                     if c not in to.joined and 'm' not in to.mode:
                         if options.join == 'auto' and c not in to.explicit_parted or options.join == 'new':
                             c.auto_join(to)
             for client in server.auth_clients():
-                if isinstance(to, Channel) and client not in to.joined:
+                if isinstance(to, Channel) and client not in to.joined or \
+                    sender == server and 'media' not in data and data['text'] == to.last_text_by_client.get(client):
                     continue
                 sender_prefix = client.prefix if sender == server else sender.prefix
                 to_nick = client.nick if to == server else to.nick
@@ -1082,7 +1084,7 @@ class SpecialChannel(Channel):
         self.explicit_parted = set()
         self.update(record)
         self.log_file = None
-        self.last_text_by_me = ''
+        self.last_text_by_client = weakref.WeakKeyDictionary()
 
     def __repr__(self):
         return repr({k: v for k, v in self.__dict__.items()
@@ -1234,7 +1236,7 @@ class SpecialChannel(Channel):
     def on_notice_or_privmsg(self, client, command, msg):
         if not client.ctcp(self, command, msg):
             reply, text = process_text(self, msg)
-            self.last_text_by_me = text
+            self.last_text_by_client[client] = text
             if reply:
                 server.loop.create_task(web.reply(client, self, reply, text))
             else:
@@ -1585,7 +1587,7 @@ class SpecialUser:
         self.mode = ''
         self.update(record)
         self.log_file = None
-        self.last_text_by_me = ''
+        self.last_text_by_client = weakref.WeakKeyDictionary()
 
     def __repr__(self):
         return repr({k: v for k, v in self.__dict__.items()
@@ -1655,7 +1657,7 @@ class SpecialUser:
     def on_notice_or_privmsg(self, client, command, text):
         if not client.ctcp(self, command, text):
             reply, text = process_text(self, text)
-            self.last_text_by_me = text
+            self.last_text_by_client[client] = text
             if reply:
                 server.loop.create_task(web.reply(client, self, reply, text))
             else:
@@ -1689,7 +1691,7 @@ class Server:
         self._boot = datetime.now()
         self.services = ('ChanServ',)
 
-        self.last_text_by_me = ''
+        self.last_text_by_client = weakref.WeakKeyDictionary()
         self.me_peer_id = 0
         self.name2special_room = {}    # name -> Telegram chatroom
         self.peer_id2special_room = {} # peer_id -> SpecialChannel
@@ -1710,6 +1712,19 @@ class Server:
 
     def auth_clients(self):
         return (client for client in self.clients if client.nick)
+
+    def preferred_client(self):
+        n = len(self.clients)
+        opt, optv = None, n+2
+        for c in self.clients:
+            if c.nick:
+                try:
+                    v = options.irc_nicks.index(c.nick)
+                except ValueError:
+                    v = n+1 if c.nick.endswith('bot') else n
+                if v < optv:
+                    opt, optv = c, v
+        return opt
 
     def has_channel(self, name):
         x = irc_lower(name)
