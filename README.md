@@ -6,7 +6,7 @@ telegramircd is an IRC server that enables IRC clients to send and receive messa
 
 - `aur/telegramircd-git`
 - `aur/telegram-cli-git`. telegramircd uses the JSON output of telegram-cli to communicate with Telegram servers. Run `telegram-cli` and login to get credential before using telegramircd.
-- Create `/etc/systemd/system/telegramircd.service` from the template `/lib/systemd/system/telegramircd.service`
+- Create `/etc/systemd/system/telegramircd.service` from the template `/lib/systemd/system/telegramircd.service`. Change the `User=` and `Group=` fields, otherwise `telegram-cli` cannot load credential stored in `~/.telegram-cli/`.
 - `systemctl start telegramircd`
 
 `telegramircd.py` (the server) will listen on 127.0.0.1:6669 (IRC) and 127.0.0.1:9003 (HTTPS + WebSocket over TLS).
