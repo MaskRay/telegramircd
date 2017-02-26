@@ -1,17 +1,19 @@
 # See https://pypi.python.org/pypi/ConfigArgParse for syntax
 
 # HTTP/WebSocket related options
-http-cert: /etc/telegramircd/cert.pem
-http-key: /etc/telegramircd/key.pem
+# Use HTTPS to server links if at least one of http-cert or http-key is specified
+#http-cert: /etc/telegramircd/cert.pem
+#http-key: /etc/telegramircd/key.pem
 http-listen: [127.0.0.1, ::1]
 http-port: 9003
-# Display document links as https://127.1/document/$id
-http-url: https://127.1
+# Display document links as http://127.1:9003/document/$id
+http-url: http://127.1:9003
 
 #ignore: [channel_name_regex0, channel_name_regex1]
 #ignore-topic: [group_name_regex0]
 
 # IRC related options
+# Use IRC over TLS if at least one of irc-cert or irc-key is specified
 #irc-cert: /etc/telegramircd/irc-cert.pem
 #irc-key: /etc/telegramircd/irc-key.pem
 irc-listen: [127.0.0.1, ::1]

@@ -69,9 +69,15 @@ The server will be bound to one account, however, you may have more than one IRC
 - `nick0: nick1: test` will be converted to `@GroupAlias0 @GroupAlias1 test`, where `GroupAlias0` is the name set by that user, not your `Set Remark and Tag`. It corresponds to `On-screen names` in the mobile application.
 - Reply to the message at 12:34:SS: `@1234 !m multi\nline\nreply`, which will be sent as `「Re GroupAlias: text」text`
 - Reply to the message at 12:34:56: `!m @123456 multi\nline\nreply`
-- Reply to the penultimate message in this channel/chat: `@2 reply`
+- Reply to the penultimate message (your own messages are not counted) in this channel/chat: `@2 reply`
+- Paste detection. PRIVMSG lines will be hold for up to 0.1 seconds, lines in this interval will be packed to a multiline message
 
-`!m `, `@3 `, `nick: ` can be arranged in any order.
+`!m `, `@3 `, `nick: ` can be arranged in any order
+
+For WeeChat, its anti-flood mechanism will prevent two user messages sent to IRC server in the same time. Disable anti-flood to enable paste detection.
+```
+/set irc.server.wechat.anti_flood_prio_high 0
+```
 
 `server-time` extension from IRC version 3.1, 3.2. `telegramircd.py` includes the timestamp (obtained from JavaScript) in messages to tell IRC clients that the message happened at the given time. See <http://ircv3.net/irc/>. See<http://ircv3.net/software/clients.html> for Client support of IRCv3.
 
@@ -118,6 +124,11 @@ Supported IRC commands:
   + `--irc-nicks ray ray1`, reverved nicks for clients. `SpecialUser` will not have these nicks.
   + `--irc-password pass`, set the connection password to `pass`.
   + `--irc-port 6669`, IRC server listen port.
+- Server side log
+  + `--logger-ignore '&test0' '&test1'`, list of ignored regex, do not log contacts/groups whose names match
+  + `--logger-mask '/tmp/telegram/$channel/%Y-%m-%d.log'`, format of log filenames
+  + `--logger-time-format %H:%M`, time format of server side log
+- `--paste-wait`, PRIVMSG lines will be hold for up to `$paste_wait` seconds, lines in this interval will be packed to a multiline message
 - telegram-cli related options
   + `--telegram-cli-command telegram-cli`, telegram-cli command name.
   + `--telegram-cli-port 1235`, telegram-cli listen port.
@@ -125,10 +136,6 @@ Supported IRC commands:
   + `--telegram-cli-poll-channels 1031857103`, telegram-cli cannot receive messages in some channels <https://github.com/vysheng/tg/issues/1135>, specify their `peer_id` to poll messages with the `history` command
   + `--telegram-cli-poll-interval 10`, interval in seconds
   + `--telegram-cli-poll-limit 10`, `history channel#{peer_id} {telegram_cli_poll_limit}`
-- Server side log
-  + `--logger-ignore '&test0' '&test1'`, list of ignored regex, do not log contacts/groups whose names match
-  + `--logger-mask '/tmp/telegram/$channel/%Y-%m-%d.log'`, format of log filenames
-  + `--logger-time-format %H:%M`, time format of server side log
 
 See [telegramircd.service](telegramircd.service) for a template of `/etc/systemd/system/telegramircd.service`.
 

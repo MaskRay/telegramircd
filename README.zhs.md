@@ -66,9 +66,15 @@ Firefox
 - 多行消息：`!m line0\nline1\nline2`
 - 回复12:34:SS的消息：`@1234 !m multi\nline\nreply`
 - 回复12:34:56的消息：`!m @123456 multi\nline\nreply`
-- 回复Telegram channel/chat里倒数第二条消息：`@2 reply`
+- 回复Telegram channel/chat倒数第二条消息(自己的消息不计数)：`@2 reply`
+- 粘贴检测。PRIVMSG行会被延迟0.1秒，期间发送的所有行会被打包成一个多行消息发送
 
 `!m `, `@3 `, `nick: `可以任意安排顺序。
+
+对于, 默认的anti-flood机制会让发出去的两条消息间隔至少2秒。禁用该机制使粘贴检测生效：
+```
+/set irc.server.telegram.anti_flood_prio_high 0
+```
 
 若客户端启用IRC 3.1 3.2的`server-time`扩展，`wechatircd.py`会在发送的消息中包含 网页版获取的时间戳。客户端显示消息时时间就会和服务器收到的消息的时刻一致。参见<http://ircv3.net/irc/>。参见<http://ircv3.net/software/clients.html>查看IRCv3的客户端支持情况。
 
