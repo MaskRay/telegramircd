@@ -10,6 +10,8 @@ http-port: 9003
 http-url: http://127.1:9003
 
 #ignore: [channel_name_regex0, channel_name_regex1]
+# uncomment the next line if you do not want to receive private messages with bots
+#ignore-bot
 #ignore-topic: [group_name_regex0]
 
 # IRC related options
@@ -30,6 +32,9 @@ join: new
 #logger-ignore:
 #logger-mask: /tmp/telegramircd/$channel/%Y-%m-%d.log
 #logger-time-format: %H:%M
+
+# uncomment the next line if you want to mark_read private messages from users
+#mark-read
 
 # telegram-cli
 #telegram-cli-command: telegram-cli

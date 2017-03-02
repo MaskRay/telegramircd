@@ -1,4 +1,4 @@
-# telegramircd
+# telegramircd [![IRC](https://img.shields.io/badge/IRC-freenode-yellow.svg)](https://webchat.freenode.net/?channels=wechatircd) [![Telegram](https://img.shields.io/badge/chat-Telegram-blue.svg)](https://t.me/wechatircd) [![Gitter](https://img.shields.io/badge/chat-Gitter-753a88.svg)](https://gitter.im/wechatircd/wechatircd)
 
 telegramircd类似于bitlbee，可以用IRC客户端收发Telegram消息。
 
@@ -59,6 +59,7 @@ Firefox
 
 ## IRC功能
 
+- 对于没有`username`的用户，显示中文姓名时姓在前
 - 标准IRC channel名以`#`开头
 - Telegram chat/channel名以`&`开头，根据title生成。`SpecialChannel#update`
 - 联系人mode为`+v`(voice，通常用`+`前缀标识)。`SpecialChannel#update_detail`
@@ -67,7 +68,7 @@ Firefox
 - 回复12:34:SS的消息：`@1234 !m multi\nline\nreply`
 - 回复12:34:56的消息：`!m @123456 multi\nline\nreply`
 - 回复Telegram channel/chat倒数第二条消息(自己的消息不计数)：`@2 reply`
-- 粘贴检测。PRIVMSG行会被延迟0.1秒，期间发送的所有行会被打包成一个多行消息发送
+- 粘贴检测。待发送消息延迟0.1秒发送，期间收到的所有行合并为一个多行消息发送
 
 `!m `, `@3 `, `nick: `可以任意安排顺序。
 
@@ -95,20 +96,49 @@ WeeChat配置如下：
 - `/names`, 更新当前群成员列表
 - `/part [$channel]`的IRC原义为离开channel，这里表示当前IRC会话中不再接收该群的消息。不用担心，telegramircd并没有主动退出群的功能
 - `/query $nick`，打开和`$nick`聊天的窗口
-- `/squit $any`，log out
 - `/topic topic`修改群标题。因为IRC不支持channel改名，实现为离开原channel并加入新channel
 - `/who $channel`，查看群的成员列表
 
-### 显示
+## 服务器选项
 
-![](https://maskray.me/static/2016-05-07-telegramircd/run.jpg)
+- `--config`, short option `-c`，配置文件路径，参见[config](config)
+- HTTP/WebSocket相关选项
+  + `--http-cert cert.pem`，HTTPS/WebSocketTLS的证书。你可以把证书和私钥合并为一个文件，省略`--http-key`选项。如果`--http-cert`和`--http-key`均未指定，使用不加密的HTTP
+  + `--http-key key.pem`，HTTPS/WebSocket的私钥
+  + `--http-listen 127.1 ::1`，HTTPS/WebSocket监听地址设置为`127.1`和`::1`，overriding `--listen`
+  + `--http-port 9000`，HTTPS/WebSocket监听端口设置为9000
+  + `--http-root .`, 存放`injector.js`的根目录
+- 指定不自动加入的群名，用于补充join mode
+  + `--ignore 'fo[o]' bar`，channel名部分匹配正则表达式`fo[o]`或`bar`
+- `--ignore-bot`, 忽略与bot的私聊消息
+- IRC相关选项
+  + `--irc-cert cert.pem`，IRC over TLS的证书。你可以把证书和私钥合并为一个文件，省略`--irc-key`选项。如果`--irc-cert`和`--irc-key`均未指定，使用不加密的IRC
+  + `--irc-key key.pem`，IRC over TLS的私钥
+  + `--irc-listen 127.1 ::1`，IRC over TLS监听地址设置为`127.1`和`::1`，overriding `--listen`
+  + `--irc-nicks ray ray1`，给客户端保留的nick。`SpecialUser`不会占用这些名字
+  + `--irc-password pass`，IRC connection password设置为`pass`
+  + `--irc-port 6667`，IRC监听端口
+- Join mode，短选项`-j`
+  + `--join auto`，默认：收到某个群第一条消息后自动加入，如果执行过`/part`命令了，则之后收到消息不会重新加入
+  + `--join all`：加入所有channel
+  + `--join manual`：不自动加入
+  + `--join new`：类似于`auto`，但执行`/part`命令后，之后收到消息仍自动加入
+- `--listen 127.0.0.1`，`-l`，IRC/HTTP/WebSocket监听地址设置为`127.0.0.1`
+- 服务端日志
+  + `--logger-ignore '&test0' '&test1'`，不记录部分匹配指定正则表达式的朋友/群日志
+  + `--logger-mask '/tmp/wechat/$channel/%Y-%m-%d.log'`，日志文件名格式
+  + `--logger-time-format %H:%M`，日志单条消息的时间格式
+- `--mark-read`, 自动`mark_read`私聊消息
+- `--paste-wait`，待发送消息延迟0.1秒发送，期间收到的所有行合并为一个多行消息发送
+- telegram-cli相关选项
+  + `--telegram-cli-command telegram-cli`, telegram-cli command name.
+  + `--telegram-cli-port 1235`, telegram-cli listen port.
+  + `--telegram-cli-timeout 10`, telegram-cli request (like `load_photo`) timeout in seconds
+  + `--telegram-cli-poll-channels 1031857103`, telegram-cli cannot receive messages in some channels <https://github.com/vysheng/tg/issues/1135>, specify their `peer_id` to poll messages with the `history` command
+  + `--telegram-cli-poll-interval 10`, interval in seconds
+  + `--telegram-cli-poll-limit 10`, `history channel#{peer_id} {telegram_cli_poll_limit}`
 
-- `[Doc] $filename filesystem:https://web.telegram.org/temporary/t_filexxxxxxxxxxxxxxx`
-- `[Photo] filesystem:https://web.telegram.org/temporary/xxxxxxxxxxx`。图片(照片)
-
-vte终端模拟器支持URL选择，但不能识别`filesystem:https://`。我修改的`aur/vte3-ng-fullwidth-emoji`添加了该类URL支持。
-
-termite `C-S-Space` URL选择也不支持，可以用<https://gist.github.com/MaskRay/9e1c57642bedd8b2b965e39b2d58fc82>添加该类URL支持。感谢张酉夫的ELF hack指导。
+[telegramircd.service](telegramircd.service)是`/etc/systemd/system/telegramircd.service`的模板，修改其中的`User=` and `Group=`。
 
 ## Demo
 

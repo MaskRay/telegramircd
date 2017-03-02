@@ -114,7 +114,10 @@ class Web(object):
         while 1:
             try:
                 unit = await self.proc.stdout.read(4096)
-                if not unit: break
+                if not unit:
+                    info('Restarting telegram-cli')
+                    await self.run_telegram_cli()
+                    break
                 buf += unit
                 while buf:
                     i0 = buf.find(b'{')
@@ -146,6 +149,11 @@ class Web(object):
                 traceback.print_exc()
                 break
 
+    async def run_telegram_cli(self):
+        self.proc = await asyncio.create_subprocess_exec(*shlex.split(options.telegram_cli_command),
+            '--disable-colors', '--disable-readline', '--json', '-P', str(options.telegram_cli_port),
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, loop=self.loop)
+
     def start(self, listens, port, loop):
         self.loop = loop
         self.app = aiohttp.web.Application()
@@ -155,21 +163,9 @@ class Web(object):
         for i in listens:
             self.srv.append(loop.run_until_complete(
                 loop.create_server(self.handler, i, port, ssl=self.tls)))
-        self.proc = loop.run_until_complete(asyncio.create_subprocess_exec(*shlex.split(options.telegram_cli_command),
-            '--disable-colors', '--disable-readline', '--json', '-P', str(options.telegram_cli_port),
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, loop=loop))
+        loop.run_until_complete(self.run_telegram_cli())
         loop.create_task(self.handle_telegram_cli())
-
-        async def init():
-            try:
-                await web.get_self()
-                await web.channel_list()
-                await web.contact_list()
-                await web.dialog_list()
-            except Exception as ex:
-                traceback.print_exc()
-
-        loop.create_task(init())
+        loop.create_task(self.init())
 
         async def poll():
             while 1:
@@ -265,26 +261,40 @@ class Web(object):
 
     async def channel_list(self):
         for data in await self.send_command('channel_list'):
-            server.ensure_special_room(data)
+            if not (data['flags'] & TGLCF_DEACTIVATED):
+                server.ensure_special_room(data)
 
     async def chat_info(self, channel):
         data = await self.send_command('chat_info {}'.format(channel.peer))
         channel.update_members(data['members'])
 
     async def contact_list(self):
-        for data in await self.send_command('channel_list'):
+        for data in await self.send_command('contact_list'):
             server.ensure_special_user(data)
 
     async def dialog_list(self):
         for data in await self.send_command('dialog_list'):
             if data['peer_type'] in ('channel', 'chat'):
-                server.ensure_special_room(data)
+                if not (data['flags'] & TGLCF_DEACTIVATED):
+                    server.ensure_special_room(data)
             elif data['peer_type'] == 'user':
                 server.ensure_special_user(data)
 
     async def get_self(self):
         data = await self.send_command('get_self')
         server.peer_id = data['peer_id']
+
+    async def init(self):
+        try:
+            await web.get_self()
+            await web.channel_list()
+            await web.contact_list()
+            await web.dialog_list()
+        except Exception as ex:
+            traceback.print_exc()
+
+    async def mark_read(self, peer):
+        await self.send_command('mark_read {}'.format(peer.peer))
 
     async def channel_members(self, channel):
         try:
@@ -563,6 +573,7 @@ class RegisteredCommands:
                 if server.has_channel(channelname):
                     channels.append(server.get_channel(channelname))
         else:
+            server.loop.create_task(web.init())
             channels = set(server.channels.values())
             channels.update(server.name2special_room.values())
             channels = list(channels)
@@ -733,11 +744,14 @@ class RegisteredCommands:
         elif command == 'PRIVMSG':
             client.err_nosuchnick(target)
 
-
-USER_FLAG_SELF = 0x3
-USER_FLAG_CONTACT = 1<<11
-USER_FLAG_MUTUAL_CONTACT = 1<<12
-
+# See https://github.com/vysheng/tgl/blob/master/tgl-layout.h &
+# https://github.com/vysheng/tgl/blob/master/structures.c
+# for the mappings from https://github.com/telegramdesktop/tdesktop/blob/master/Telegram/SourceFiles/mtproto/scheme.tl to flags used in `tgl`
+TGLCF_DEACTIVATED = 1<<8
+TGLUF_SELF = 1<<19
+TGLUF_CONTACT = 1<<16
+TGLUF_MUTUAL_CONTACT = 1<<17
+TGLUF_BLOCKED = 1<<18
 
 class SpecialCommands:
     @staticmethod
@@ -751,6 +765,10 @@ class SpecialCommands:
             to = server.ensure_special_user(data['to'])
         elif data['to']['peer_type'] in ('channel', 'chat'):
             to = server.ensure_special_room(data['to'])
+        if options.ignore_bot and (
+                sender == server and isinstance(to, SpecialUser) and to.nick.endswith('bot') or
+                isinstance(sender, SpecialUser) and sender.nick.endswith('bot') or to == server):
+            return
         data['from'] = sender
         data['to'] = to.peer_id
         web.append_history(data)
@@ -817,6 +835,9 @@ class SpecialCommands:
                 else:
                     client.write(':{} PRIVMSG {} :{}'.format(
                         sender_prefix, to_nick, line))
+        if options.mark_read and isinstance(sender, SpecialUser) and to ==server:
+            server.loop.create_task(web.mark_read(sender))
+
 
     @staticmethod
     def service(data):
@@ -829,6 +850,15 @@ class SpecialCommands:
                 if user.is_contact:
                     channel.voice_event(user)
                     channel.set_umode(user, 'v')
+        elif data['action']['type'] == 'chat_del_user':
+            user = server.ensure_special_user(data['action']['user'])
+            channel = server.ensure_special_room(data['to'])
+            if user == server:
+                joined = [client for client in server.auth_clients() if client in channel.joined]
+                for client in joined:
+                    channel.on_part(client)
+            elif user in channel.members:
+                channel.on_part(user)
 
 ### Channels: StandardChannel, StatusChannel, SpecialChannel
 
@@ -1069,7 +1099,7 @@ class StatusChannel(Channel):
                 return False
             member.enter(self)
             self.join_event(member)
-            if member.phone:
+            if member.flags & TGLUF_MUTUAL_CONTACT:
                 self.voice_event(member)
                 self.members[member] = 'v'
             else:
@@ -1124,7 +1154,7 @@ class SpecialChannel(Channel):
 
     def __repr__(self):
         return repr({k: v for k, v in self.__dict__.items()
-            if k in ('name', 'peer_id', 'peer_type')})
+            if k in ('flags', 'name', 'peer_id', 'peer_type')})
 
     @property
     def nick(self):
@@ -1624,7 +1654,7 @@ class SpecialUser:
 
     def __repr__(self):
         return repr({k: v for k, v in self.__dict__.items()
-            if k in ('is_contact', 'name', 'peer_id', 'print_name', 'username')})
+            if k in ('flags', 'name', 'peer_id', 'print_name', 'username')})
 
     @property
     def peer(self):
@@ -1648,7 +1678,6 @@ class SpecialUser:
         self.username = record.get('username')
         self.flags = record['flags']
         self.print_name = record['print_name']
-        self.phone = record.get('phone', '')
         old_nick = getattr(self, 'nick', None)
         base = irc_escape_nick(self.preferred_nick()) or 'Guest'
         suffix = ''
@@ -1663,8 +1692,7 @@ class SpecialUser:
             for channel in self.channels:
                 channel.nick_event(self, nick)
             self.nick = nick
-        #if self.flags & USER_FLAG_CONTACT:
-        if self.phone:
+        if self.flags & TGLUF_CONTACT and not (self.flags & TGLUF_BLOCKED):
             if not self.is_contact:
                 self.is_contact = True
                 StatusChannel.instance.on_join(self)
@@ -1813,12 +1841,12 @@ class Server:
 
     def ensure_special_user(self, record):
         debug('ensure_special_user %r', record)
-        if (record.get('flags', 0) & USER_FLAG_SELF) == USER_FLAG_SELF:
+        if record['flags'] & TGLUF_SELF:
             return self
         assert isinstance(record['peer_id'], int)
         assert isinstance(record.get('username', ''), str)
         assert isinstance(record['print_name'], str)
-        assert isinstance(record.get('flags', 0), int)
+        assert isinstance(record['flags'], int)
         if record['peer_id'] in self.peer_id2special_user:
             user = self.peer_id2special_user[record['peer_id']]
             self.remove_special_user(user.nick)
@@ -1905,6 +1933,7 @@ def main():
     ap.add_argument('--http-port', type=int, default=9003, help='HTTP listen port, default: 9003')
     ap.add_argument('-i', '--ignore', nargs='*',
                     help='list of ignored regex, do not auto join to a '+im_name+' chatroom whose channel name(generated from DisplayName) matches')
+    ap.add_argument('--ignore-bot', action='store_true', help='ignore private messages with bots')
     ap.add_argument('-I', '--ignore-topic', nargs='*',
                     help='list of ignored regex, do not auto join to a '+im_name+' chatroom whose topic matches')
     ap.add_argument('--irc-cert', help='TLS certificate for IRC over TLS. You may concatenate certificate+key, specify a single PEM file and omit `--irc-key`. Use plain IRC if neither --irc-cert nor --irc-key is specified')
@@ -1923,6 +1952,7 @@ def main():
     ap.add_argument('--logger-ignore', nargs='*', help='list of ignored regex, do not log contacts/chatrooms whose names match')
     ap.add_argument('--logger-mask', help='WeeChat logger.mask.irc')
     ap.add_argument('--logger-time-format', default='%H:%M', help='WeeChat logger.file.time_format')
+    ap.add_argument('--mark-read', action='store_true', help='mark_read private messages from users'),
     ap.add_argument('--paste-wait', type=float, default=0.1, help='PRIVMSG lines will be hold for up to $paste_wait seconds, lines in this interval will be packed to a multiline message')
     ap.add_argument('-q', '--quiet', action='store_const', const=logging.WARN, dest='loglevel')
     ap.add_argument('--telegram-cli-command', default='telegram-cli',
