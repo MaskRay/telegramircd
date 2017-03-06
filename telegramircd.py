@@ -9,6 +9,7 @@ import aiohttp.web, asyncio, inspect, json, logging.handlers, mimetypes, os, ppr
 
 logger = logging.getLogger('telegramircd')
 im_name = 'Telegram'
+capabilities = set(['draft/message-tags', 'echo-message', 'multi-prefix', 'server-time'])  # http://ircv3.net/irc/
 options = None
 server = None
 web = None
@@ -465,10 +466,18 @@ class UnregisteredCommands(object):
     def cap(client, *args):
         if not args: return
         comm = args[0].lower()
-        if comm == 'ls' or comm == 'list':
-            client.reply('CAP * {} :server-time', args[0])
+        if comm == 'list':
+            client.reply('CAP * LIST :{}', ' '.join(client.capabilities))
+        elif comm == 'ls':
+            client.reply('CAP * LS :{}', ' '.join(capabilities))
         elif comm == 'req':
-            client.capabilities = set(['server-time']) & set(args[1].split())
+            enabled, disabled = set(), set()
+            for name in args[1].split():
+                if name.startswith('-'):
+                    disabled.add(name[1:])
+                else:
+                    enabled.add(name)
+            client.capabilities = (capabilities & enabled) - disabled
             client.reply('CAP * ACK :{}', ' '.join(client.capabilities))
 
     @staticmethod
@@ -823,21 +832,25 @@ class SpecialCommands:
                         if options.join == 'auto' and c not in to.explicit_parted or options.join == 'new':
                             c.auto_join(to)
             for client in server.auth_clients():
-                if isinstance(to, Channel) and client not in to.joined or \
-                    sender == server and 'media' not in data and data['text'] == to.last_text_by_client.get(client):
+                if isinstance(to, Channel) and client not in to.joined or (
+                        'echo-message' not in client.capabilities and
+                        sender == server and 'media' not in data and
+                        data['text'] == to.last_text_by_client.get(client)):
                     continue
                 sender_prefix = client.prefix if sender == server else sender.prefix
                 to_nick = client.nick if to == server else to.nick
+                msg = ':{} PRIVMSG {} :{}'.format(sender_prefix, to_nick, line)
+                tags = []
+                if 'draft/message-tags' in client.capabilities:
+                    tags.append('draft/msgid={}'.format(data['id']))
                 if 'server-time' in client.capabilities:
-                    client.write('@time={}Z :{} PRIVMSG {} :{}'.format(
-                        datetime.fromtimestamp(data['date'], timezone.utc).strftime('%FT%T.%f')[:23],
-                        sender_prefix, to_nick, line))
-                else:
-                    client.write(':{} PRIVMSG {} :{}'.format(
-                        sender_prefix, to_nick, line))
+                    tags.append('time={}Z'.format(datetime.fromtimestamp(
+                        data['date'], timezone.utc).strftime('%FT%T.%f')[:23]))
+                if tags:
+                    msg = '@{} {}'.format(';'.join(tags), msg)
+                client.write(msg)
         if options.mark_read and isinstance(sender, SpecialUser) and to ==server:
             server.loop.create_task(web.mark_read(sender))
-
 
     @staticmethod
     def service(data):
@@ -947,17 +960,43 @@ class Channel:
         client.rpl_channelmodeis(self.name, self.mode)
 
     def on_names(self, client):
-        members = []
-        for u, mode in self.members.items():
+        self.on_names_impl(client, self.members.items())
+
+    def on_names_impl(self, client, items):
+        names = []
+        for u, mode in items:
             nick = u.nick
-            if 'o' in mode:
-                nick = '@'+nick
-            elif 'v' in mode:
-                nick = '+'+nick
-            members.append(nick)
-        if members:
-            client.reply('353 {} = {} :{}', client.nick, self.name,
-                         ' '.join(sorted(members)))
+            prefix = ''
+            while 1:
+                if 'o' in mode:
+                    prefix += '@'
+                    if 'multi-prefix' not in client.capabilities:
+                        break
+                if 'h' in mode:
+                    prefix += '%'
+                    if 'multi-prefix' not in client.capabilities:
+                        break
+                if 'v' in mode:
+                    prefix += '+'
+                    if 'multi-prefix' not in client.capabilities:
+                        break
+                break
+            names.append(prefix+nick)
+        buf = ''
+        bytelen = 0
+        maxlen = 510-1-len(server.name)-5-len(client.nick.encode())-3-len(self.name.encode())-2
+        for name in names:
+            if bytelen+1+len(name.encode()) > maxlen:
+                client.reply('353 {} = {} :{}', client.nick, self.name, buf)
+                buf = ''
+                bytelen = 0
+            if buf:
+                buf += ' '
+                bytelen += 1
+            buf += name
+            bytelen += len(name.encode())
+        if buf:
+            client.reply('353 {} = {} :{}', client.nick, self.name, buf)
         client.reply('366 {} {} :End of NAMES list', client.nick, self.name)
 
     def on_topic(self, client, new=None):
@@ -1092,7 +1131,7 @@ class StatusChannel(Channel):
         if isinstance(member, Client):
             if member in self.members:
                 return False
-            self.members[member] = ''
+            self.members[member] = 'o'
             super().on_join(member)
         else:
             if member in self.members:
@@ -1105,18 +1144,6 @@ class StatusChannel(Channel):
             else:
                 self.members[member] = ''
         return True
-
-    def on_names(self, client):
-        members = []
-        for u, mode in self.members.items():
-            nick = u.nick
-            if 'o' in mode:
-                nick = '@'+nick
-            elif 'v' in mode:
-                nick = '+'+nick
-            members.append(nick)
-        client.reply('353 {} = {} :{}', client.nick, self.name, ' '.join(sorted(members)))
-        client.reply('366 {} {} :End of NAMES list', client.nick, self.name)
 
     def on_part(self, member, msg=None):
         if isinstance(member, Client):
@@ -1286,18 +1313,7 @@ class SpecialChannel(Channel):
             client.rpl_channelmodeis(self.name, self.mode)
 
     def on_names(self, client):
-        members = []
-        for u, mode in chain(self.joined.items(), self.members.items()):
-            nick = u.nick
-            if 'o' in mode:
-                nick = '@'+nick
-            elif 'v' in mode:
-                nick = '+'+nick
-            members.append(nick)
-        if members:
-            client.reply('353 {} = {} :{}', client.nick, self.name,
-                         ' '.join(sorted(members)))
-        client.reply('366 {} {} :End of NAMES list', client.nick, self.name)
+        self.on_names_impl(client, chain(self.joined.items(), self.members.items()))
 
     def on_notice_or_privmsg(self, client, command, text):
         irc_privmsg(client, command, self, text)
@@ -1570,6 +1586,12 @@ class Client:
             sent_ping = False
             if not line:
                 continue
+            # http://ircv3.net/specs/core/message-tags-3.2.html
+            if line.startswith('@'):
+                x = line.split(' ', 1)
+                if len(x) == 1: continue
+                line = x[1]
+
             x = line.split(' ', 1)
             command = x[0]
             if len(x) == 1:
