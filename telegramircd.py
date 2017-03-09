@@ -4,12 +4,12 @@ from configargparse import ArgParser, Namespace
 from collections import deque
 from datetime import datetime, timezone
 from itertools import chain
-import aiohttp.web, asyncio, inspect, json, logging.handlers, mimetypes, os, pprint, random, re, \
+import aiohttp.web, asyncio, base64, inspect, json, logging.handlers, mimetypes, os, pprint, random, re, \
     shlex, signal, socket, ssl, string, sys, tempfile, time, traceback, uuid, weakref
 
 logger = logging.getLogger('telegramircd')
 im_name = 'Telegram'
-capabilities = set(['draft/message-tags', 'echo-message', 'multi-prefix', 'server-time'])  # http://ircv3.net/irc/
+capabilities = set(['away-notify', 'draft/message-tags', 'echo-message', 'multi-prefix', 'sasl', 'server-time'])  # http://ircv3.net/irc/
 options = None
 server = None
 web = None
@@ -55,6 +55,7 @@ class Web(object):
         self.id2media = {}
         self.id2message = {}
         self.recent_messages = deque()
+        self.proc = None
 
     async def send_command(self, command, timeout=None):
         if timeout is None:
@@ -86,7 +87,7 @@ class Web(object):
                 writer.close()
 
     async def handle_media(self, type, request):
-        id = request.match_info.get('id')
+        id = re.sub(r'\..*', '', request.match_info.get('id'))
         if id not in self.id2media:
             return aiohttp.web.Response(status=404, text='Not Found')
         try:
@@ -151,6 +152,13 @@ class Web(object):
                 break
 
     async def run_telegram_cli(self):
+        if self.proc:
+            try:
+                self.proc.terminate()
+                time.sleep(1)
+                self.proc.kill()
+            except:
+                pass
         self.proc = await asyncio.create_subprocess_exec(*shlex.split(options.telegram_cli_command),
             '--disable-colors', '--disable-readline', '--json', '-P', str(options.telegram_cli_port),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, loop=self.loop)
@@ -240,13 +248,13 @@ class Web(object):
                 client.err_chanoprivsneeded(channel.name)
             else:
                 if ty == 0:
-                    self.unset_umode(user, 'h')
-                    self.unset_umode(user, 'o')
+                    self.unset_cmode(user, 'h')
+                    self.unset_cmode(user, 'o')
                 elif ty == 1:
-                    self.set_umode(user, 'h')
+                    self.set_cmode(user, 'h')
                     channel.halfop_event(user)
                 elif ty == 2:
-                    self.set_umode(user, 'o')
+                    self.set_cmode(user, 'o')
                     channel.op_event(user)
         else:
             client.err_chanoprivsneeded(channel.name)
@@ -354,7 +362,7 @@ def irc_escape(s):
 
 
 def irc_escape_nick(s):
-    return re.sub('^[&#!+]*', '', irc_escape(s))
+    return re.sub('^[&#!+:]*', '', irc_escape(s))
 
 
 def process_text(to, text):
@@ -461,8 +469,42 @@ def irc_privmsg(client, command, to, text):
 
 ### Commands
 
-class UnregisteredCommands(object):
+cmd_use_case = {}
+
+
+def registered(v):
+    def wrapped(fn):
+        cmd_use_case[fn.__name__] = v
+        return fn
+    return wrapped
+
+
+class Command:
     @staticmethod
+    @registered(3)
+    def authenticate(client, arg):
+        if arg.upper() == 'PLAIN':
+            client.write('AUTHENTICATE +')
+            return
+        if not (client.nick and client.user):
+            return
+        try:
+            if base64.b64decode(arg).split(b'\0')[2].decode() == options.sasl_password:
+                client.authenticated = True
+                client.reply('900 {} {} {} :You are now logged in as {}', client.nick, client.user, client.nick, client.nick)
+                client.reply('903 {} :SASL authentication successful', client.nick)
+                client.register()
+            else:
+                client.reply('904 {} :SASL authentication failed', client.nick)
+        except:
+            client.reply('904 {} :SASL authentication failed', client.nick)
+
+    @staticmethod
+    def away(client):
+        pass
+
+    @staticmethod
+    @registered(3)
     def cap(client, *args):
         if not args: return
         comm = args[0].lower()
@@ -479,43 +521,6 @@ class UnregisteredCommands(object):
                     enabled.add(name)
             client.capabilities = (capabilities & enabled) - disabled
             client.reply('CAP * ACK :{}', ' '.join(client.capabilities))
-
-    @staticmethod
-    def nick(client, *args):
-        if len(options.irc_password) and not client.authenticated:
-            client.err_passwdmismatch('NICK')
-            return
-        if not args:
-            client.err_nonicknamegiven()
-            return
-        server.change_nick(client, args[0])
-
-    @staticmethod
-    def pass_(client, password):
-        if len(options.irc_password) and password == options.irc_password:
-            client.authenticated = True
-
-    @staticmethod
-    def quit(client):
-        client.disconnect('Client quit')
-
-    @staticmethod
-    def user(client, user, mode, _, realname):
-        if len(options.irc_password) and not client.authenticated:
-            client.err_passwdmismatch('USER')
-            return
-        client.user = user
-        client.realname = realname
-
-
-class RegisteredCommands:
-    @staticmethod
-    def away(client):
-        pass
-
-    @staticmethod
-    def cap(client, *args):
-        UnregisteredCommands.cap(client, *args)
 
     @staticmethod
     def info(client):
@@ -637,7 +642,11 @@ class RegisteredCommands:
         channel.on_names(client)
 
     @staticmethod
+    @registered(3)
     def nick(client, *args):
+        if len(options.irc_password) and not client.authenticated:
+            client.err_passwdmismatch('NICK')
+            return
         if not args:
             client.err_nonicknamegiven()
             return
@@ -645,7 +654,7 @@ class RegisteredCommands:
 
     @staticmethod
     def notice(client, *args):
-        RegisteredCommands.notice_or_privmsg(client, 'NOTICE', *args)
+        Command.notice_or_privmsg(client, 'NOTICE', *args)
 
     @staticmethod
     def part(client, arg, *args):
@@ -657,6 +666,14 @@ class RegisteredCommands:
                 client.err_notonchannel(channelname)
 
     @staticmethod
+    @registered(1)
+    def pass_(client, password):
+        if len(options.irc_password) and password == options.irc_password:
+            client.authenticated = True
+            client.register()
+
+    @staticmethod
+    @registered(3)
     def ping(client, *args):
         if not args:
             client.err_noorigin()
@@ -664,14 +681,16 @@ class RegisteredCommands:
         client.reply('PONG {} :{}', server.name, args[0])
 
     @staticmethod
+    @registered(3)
     def pong(client, *args):
         pass
 
     @staticmethod
     def privmsg(client, *args):
-        RegisteredCommands.notice_or_privmsg(client, 'PRIVMSG', *args)
+        Command.notice_or_privmsg(client, 'PRIVMSG', *args)
 
     @staticmethod
+    @registered(3)
     def quit(client, *args):
         client.disconnect(args[0] if args else client.prefix)
 
@@ -753,6 +772,16 @@ class RegisteredCommands:
         elif command == 'PRIVMSG':
             client.err_nosuchnick(target)
 
+    @staticmethod
+    @registered(1)
+    def user(client, user, mode, _, realname):
+        if len(options.irc_password) and not client.authenticated:
+            client.err_passwdmismatch('USER')
+            return
+        client.user = user
+        client.realname = realname
+        client.register()
+
 # See https://github.com/vysheng/tgl/blob/master/tgl-layout.h &
 # https://github.com/vysheng/tgl/blob/master/structures.c
 # for the mappings from https://github.com/telegramdesktop/tdesktop/blob/master/Telegram/SourceFiles/mtproto/scheme.tl to flags used in `tgl`
@@ -798,7 +827,7 @@ class SpecialCommands:
                     text = data['text']
             elif type in ('audio', 'document', 'photo', 'video'):
                 media_id = str(len(web.id2media))
-                text = '[{}] {}/document/{}'.format(type, options.http_url, media_id)
+                text = '[{}] {}/document/{}{}'.format(type, options.http_url, media_id, {'audio': '.mp3', 'photo': '.jpg', 'video': '.mp4'}.get(type, ''))
                 web.id2media[media_id] = (data['id'], None)
             else: # e.g. contact
                 dic = {}
@@ -849,8 +878,19 @@ class SpecialCommands:
                 if tags:
                     msg = '@{} {}'.format(';'.join(tags), msg)
                 client.write(msg)
-        if options.mark_read and isinstance(sender, SpecialUser) and to ==server:
+        if options.mark_read == 'always' and isinstance(sender, SpecialUser) and to == server:
             server.loop.create_task(web.mark_read(sender))
+
+    @staticmethod
+    def online_status(data):
+        user = server.ensure_special_user(data['user'])
+        if user != server:
+            if data['online']:
+                user.unset_umode('a')
+                user.event('AWAY')
+            else:
+                user.set_umode('a')
+                user.event('AWAY', 'away')
 
     @staticmethod
     def service(data):
@@ -862,7 +902,7 @@ class SpecialCommands:
                 channel.on_join(user)
                 if user.is_contact:
                     channel.voice_event(user)
-                    channel.set_umode(user, 'v')
+                    channel.set_cmode(user, 'v')
         elif data['action']['type'] == 'chat_del_user':
             user = server.ensure_special_user(data['action']['user'])
             channel = server.ensure_special_room(data['to'])
@@ -1195,8 +1235,8 @@ class SpecialChannel(Channel):
         self.flags = record['flags']
         self.peer_type = record['peer_type']
         old_name = getattr(self, 'name', None)
-        base = '&' + irc_escape(record['title'])
-        if base == '&':
+        base = options.special_channel_prefix  + irc_escape(record['title'])
+        if base == options.special_channel_prefix:
             base += '.'.join(member.nick for member in self.members)[:20]
         suffix = ''
         while 1:
@@ -1229,17 +1269,17 @@ class SpecialChannel(Channel):
                 seen.add(user)
         for client, mode in self.joined.items():
             if 'o' in mode and not seen_me:
-                self.unset_umode(user, 'o')
+                self.unset_cmode(user, 'o')
                 self.deop_event(client)
             if 'o' not in mode and seen_me:
-                self.set_umode(user, 'o')
+                self.set_cmode(user, 'o')
                 self.op_event(client)
         for user, mode in self.members.items():
             if 'o' in mode and user not in seen:
-                self.unset_umode(user, 'o')
+                self.unset_cmode(user, 'o')
                 self.deop_event(user)
             if 'o' not in mode and user in seen:
-                self.set_umode(user, 'o')
+                self.set_cmode(user, 'o')
                 self.op_event(user)
 
     def update_members(self, members):
@@ -1255,16 +1295,16 @@ class SpecialChannel(Channel):
         for user, mode in seen.items():
             old = self.members.get(user, '')
             if 'h' in old and 'h' not in mode:
-                self.unset_umode(user, 'h')
+                self.unset_cmode(user, 'h')
                 self.dehalfop_event(user)
             if 'h' not in old and 'h' in mode:
-                self.set_umode(user, 'h')
+                self.set_cmode(user, 'h')
                 self.halfop_event(user)
             if 'v' in old and 'v' not in mode:
-                self.unset_umode(user, 'v')
+                self.unset_cmode(user, 'v')
                 self.devoice_event(user)
             if 'v' not in old and 'v' in mode:
-                self.set_umode(user, 'v')
+                self.set_cmode(user, 'v')
                 self.voice_event(user)
         self.members = seen
 
@@ -1275,13 +1315,13 @@ class SpecialChannel(Channel):
                 ret.append(client)
         return ret
 
-    def set_umode(self, user, m):
+    def set_cmode(self, user, m):
         if user in self.joined:
             self.joined[user] = m+self.joined[user].replace(m, '')
         elif user in self.members:
             self.members[user] = m+self.members[user].replace(m, '')
 
-    def unset_umode(self, user, m):
+    def unset_cmode(self, user, m):
         if user in self.joined:
             self.joined[user] = self.joined[user].replace(m, '')
         elif user in self.members:
@@ -1418,13 +1458,15 @@ class Client:
         if quitmsg:
             self.write('ERROR :{}'.format(quitmsg))
             self.message_related(False, ':{} QUIT :{}', self.prefix, quitmsg)
-        if self.nick is None: return
-        info('Disconnected from %s', self.prefix)
+        if self.nick is not None:
+            info('Disconnected from %s', self.prefix)
         try:
             self.writer.write_eof()
             self.writer.close()
         except:
             pass
+        if self.nick is None:
+            return
         channels = list(self.channels.values())
         for channel in channels:
             channel.on_part(self, None)
@@ -1437,7 +1479,7 @@ class Client:
 
     def write(self, msg):
         try:
-            self.writer.write(msg.encode()+b'\n')
+            self.writer.write(msg.encode()+b'\r\n')
         except:
             pass
 
@@ -1537,33 +1579,37 @@ class Client:
         for client in clients:
             client.write(line)
 
+    def register(self):
+        if self.registered:
+            return
+        if self.user and self.nick and (not (options.irc_password or options.sasl_password) or self.authenticated):
+            self.registered = True
+            info('%s registered', self.prefix)
+            self.reply('001 {} :Hi, welcome to IRC', self.nick)
+            self.reply('002 {} :Your host is {}', self.nick, server.name)
+            Command.lusers(self)
+            Command.motd(self)
+
+            Command.join(self, StatusChannel.instance.name)
+            StatusChannel.instance.respond(self, 'Visit web.telegram.org and then you will see your friend list in this channel')
+
     def handle_command(self, command, args):
-        cls = RegisteredCommands if self.registered else UnregisteredCommands
-        ret = False
         cmd = irc_lower(command)
         if cmd == 'pass':
             cmd = cmd+'_'
-        if type(cls.__dict__.get(cmd)) != staticmethod:
+        if type(Command.__dict__.get(cmd)) != staticmethod:
             self.err_unknowncommand(command)
-        else:
-            fn = getattr(cls, cmd)
-            try:
-                ba = inspect.signature(fn).bind(self, *args)
-            except TypeError:
-                self.err_needmoreparams(command)
-            else:
-                fn(*ba.args)
-                if not self.registered and self.user and self.nick:
-                    info('%s registered', self.prefix)
-                    self.reply('001 {} :Hi, welcome to IRC', self.nick)
-                    self.reply('002 {} :Your host is {}', self.nick, server.name)
-                    RegisteredCommands.lusers(self)
-                    RegisteredCommands.motd(self)
-                    self.registered = True
-
-                    status_channel = StatusChannel.instance
-                    RegisteredCommands.join(self, status_channel.name)
-                    status_channel.respond(self, 'Visit web.telegram.org and then you will see your friend list in this channel')
+            return
+        fn = getattr(Command, cmd)
+        if not (cmd_use_case.get(cmd, 2) & (2 if self.registered else 1)):
+            self.err_unknowncommand(command)
+            return
+        try:
+            ba = inspect.signature(fn).bind(self, *args)
+        except TypeError:
+            self.err_needmoreparams(command)
+            return
+        fn(*ba.args)
 
     async def handle_irc(self):
         sent_ping = False
@@ -1696,6 +1742,24 @@ class SpecialUser:
             return m.group(2)+m.group(1)
         return self.print_name
 
+    def event(self, command, fmt=None, *args):
+        if fmt:
+            line = fmt.format(*args) if args else fmt
+        for client in server.auth_clients():
+            if command == 'AWAY' and 'away-notify' not in client.capabilities: continue
+            if fmt:
+                client.write(':{} {} {}'.format(self.prefix, command, line))
+            else:
+                client.write(':{} {}'.format(self.prefix, command))
+
+    def set_umode(self, m):
+        if m not in self.mode:
+            self.mode += m
+
+    def unset_umode(self, m):
+        if m in self.mode:
+            self.mode = self.mode.replace(m, '')
+
     def update(self, record):
         self.username = record.get('username')
         self.flags = record['flags']
@@ -1720,7 +1784,7 @@ class SpecialUser:
                 StatusChannel.instance.on_join(self)
                 for channel in self.channels:
                     if isinstance(channel, SpecialChannel):
-                        channel.set_umode(self, 'v')
+                        channel.set_cmode(self, 'v')
                         channel.voice_event(self)
         else:
             if self.is_contact:
@@ -1728,7 +1792,7 @@ class SpecialUser:
                 StatusChannel.instance.on_part(self)
                 for channel in self.channels:
                     if isinstance(channel, SpecialChannel):
-                        channel.unset_umode(self, 'v')
+                        channel.unset_cmode(self, 'v')
                         channel.devoice_event(self)
 
     def enter(self, channel):
@@ -1739,6 +1803,10 @@ class SpecialUser:
 
     def on_notice_or_privmsg(self, client, command, text):
         irc_privmsg(client, command, self, text)
+        if 'a' in self.mode:
+            client.write(':{} AWAY away'.format(self.prefix))
+        if options.mark_read == 'reply':
+            server.loop.create_task(web.mark_read(self))
 
     def on_who_member(self, client, channel):
         client.reply('352 {} {} {} {} {} {} H :0 {}', client.nick, channel.name,
@@ -1748,6 +1816,8 @@ class SpecialUser:
     def on_whois(self, client):
         client.reply('311 {} {} {} {} * :{}', client.nick, self.nick,
                      self.peer_id, im_name, self.print_name)
+        if 'a' in self.mode:
+            client.reply('301 {} {} away', client.nick, self.nick)
 
 
 class Server:
@@ -1788,7 +1858,7 @@ class Server:
             traceback.print_exc()
 
     def auth_clients(self):
-        return (client for client in self.clients if client.nick)
+        return (client for client in self.clients if client.registered)
 
     def preferred_client(self):
         n = len(self.clients)
@@ -1914,11 +1984,11 @@ class Server:
     def on_telegram_cli(self, data):
         if isinstance(data, list):
             for x in data:
-                name = x.get('event') or x.get('peer_type')
+                name = (x.get('event') or x.get('peer_type')).replace('-', '_')
                 if type(SpecialCommands.__dict__.get(name)) == staticmethod:
                     getattr(SpecialCommands, name)(x)
         else:
-            name = data.get('event') or data.get('peer_type')
+            name = (data.get('event') or data.get('peer_type')).replace('-', '_')
             if type(SpecialCommands.__dict__.get(name)) == staticmethod:
                 getattr(SpecialCommands, name)(data)
 
@@ -1974,9 +2044,11 @@ def main():
     ap.add_argument('--logger-ignore', nargs='*', help='list of ignored regex, do not log contacts/chatrooms whose names match')
     ap.add_argument('--logger-mask', help='WeeChat logger.mask.irc')
     ap.add_argument('--logger-time-format', default='%H:%M', help='WeeChat logger.file.time_format')
-    ap.add_argument('--mark-read', action='store_true', help='mark_read private messages from users'),
+    ap.add_argument('--mark-read', choices=('always', 'reply', 'never'), default='reply', help='when to mark_read private messages from users. always: mark_read all messages; reply: mark_read when sending messages to the peer; never: never mark_read. default: reply'),
     ap.add_argument('--paste-wait', type=float, default=0.1, help='PRIVMSG lines will be hold for up to $paste_wait seconds, lines in this interval will be packed to a multiline message')
     ap.add_argument('-q', '--quiet', action='store_const', const=logging.WARN, dest='loglevel')
+    ap.add_argument('--sasl-password', default='', help='Set the SASL password')
+    ap.add_argument('--special-channel-prefix', choices=('&', '!', '#', '##'), default='&', help='prefix for SpecialChannel')
     ap.add_argument('--telegram-cli-command', default='telegram-cli',
                     help='telegram-cli command name. default: telegram-cli')
     ap.add_argument('--telegram-cli-port', type=int, default=1235,

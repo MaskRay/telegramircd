@@ -33,8 +33,11 @@ join: new
 #logger-mask: /tmp/telegramircd/$channel/%Y-%m-%d.log
 #logger-time-format: %H:%M
 
-# uncomment the next line if you want to mark_read private messages from users
-#mark-read
+# when to mark_read private messages from users, choices: always, reply, never
+#mark-read: reply
+
+# SASL PLAIN password (as an alternative to --irc-password)
+#sasl-password:
 
 # telegram-cli
 #telegram-cli-command: telegram-cli

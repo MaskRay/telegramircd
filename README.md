@@ -13,7 +13,7 @@ telegramircd is an IRC server that enables IRC clients to send and receive messa
 
 `telegramircd.py` (the server) will listen on 127.0.0.1:6669 (IRC) and 127.0.0.1:9003 (HTTPS + WebSocket over TLS).
 
-If you run the server on another machine, it is recommended to set up IRC over TLS and an IRC connection password with a few more options: `--irc-cert /path/to/irc.key --irc-key /path/to/irc.cert --irc-password yourpassword`. You can reuse the HTTPS certificate+key. If you use WeeChat and find it difficult to set up a valid certificate (gnutls checks the hostname), type the following lines in WeeChat:
+If you run the server on another machine, it is recommended to set up IRC over TLS and an IRC connection password with a few more options: `--irc-cert /path/to/irc.key --irc-key /path/to/irc.cert --irc-password yourpassword`. As an alternative to the IRC connection password, you may specify `--sasl-password yourpassword` and authenticate with SASL PLAIN. You can reuse the HTTPS certificate+key. If you use WeeChat and find it difficult to set up a valid certificate (gnutls checks the hostname), type the following lines in WeeChat:
 ```
 set irc.server.telegram.ssl on
 set irc.server.telegram.ssl_verify off
@@ -134,8 +134,13 @@ Supported IRC commands:
   + `--logger-ignore '&test0' '&test1'`, list of ignored regex, do not log contacts/groups whose names match
   + `--logger-mask '/tmp/telegram/$channel/%Y-%m-%d.log'`, format of log filenames
   + `--logger-time-format %H:%M`, time format of server side log
-- `--mark-read`, `mark_read` private messages from users
+- `--mark-read`, when to `mark_read` private messages from users
+  + `always`, `mark_read` all messages
+  + `reply`, default: `mark_read` when sending messages to the peer
+  + `never`, never
 - `--paste-wait`, PRIVMSG lines will be hold for up to `$paste_wait` seconds, lines in this interval will be packed to a multiline message
+- `--sasl-password pass`, set the SASL password to `pass`.
+- `--special-channel-prefix`, choices: `&`, `!`, `#`, `##`, prefix for SpecialChannel. [Quassel](quassel-irc.org) does not seem to support channels with prefixes `&`, `--special-channel-prefix '##'` to make Quassel happy
 - telegram-cli related options
   + `--telegram-cli-command telegram-cli`, telegram-cli command name.
   + `--telegram-cli-port 1235`, telegram-cli listen port.

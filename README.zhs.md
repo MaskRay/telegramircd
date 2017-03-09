@@ -130,6 +130,7 @@ WeeChat配置如下：
   + `--logger-time-format %H:%M`，日志单条消息的时间格式
 - `--mark-read`, 自动`mark_read`私聊消息
 - `--paste-wait`，待发送消息延迟0.1秒发送，期间收到的所有行合并为一个多行消息发送
+- `--special-channel-prefix`，选项：`&`, `!`, `#`, `##`，SpecialChannel的前缀。[Quassel](quassel-irc.org)似乎不支持channel前缀`&`，指定`--special-channel-prefix '##'`让Quassel高兴
 - telegram-cli相关选项
   + `--telegram-cli-command telegram-cli`, telegram-cli command name.
   + `--telegram-cli-port 1235`, telegram-cli listen port.
