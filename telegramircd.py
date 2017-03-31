@@ -117,9 +117,8 @@ class Web(object):
             try:
                 unit = await self.proc.stdout.read(4096)
                 if not unit:
-                    info('Restarting telegram-cli')
-                    await self.run_telegram_cli()
-                    break
+                    await restart_telegram_cli()
+                    continue
                 buf += unit
                 while buf:
                     i0 = buf.find(b'{')
@@ -325,6 +324,8 @@ class Web(object):
                     await self.send_command('send_file {} {}'.format(peer.peer, f.name))
             except TelegramCliFail as ex:
                 client.err_cannotsendtochan(peer.nick, 'Cannot send the file')
+            except asyncio.TimeoutError:
+                await restart_telegram_cli()
             os.unlink(filename)
 
     async def msg(self, client, peer, text):
@@ -335,6 +336,8 @@ class Web(object):
                 client.err_nosuchchannel(peer.name)
             elif isinstance(peer, SpecialUser):
                 client.err_nosuchnick(peer.nick)
+        except asyncio.TimeoutError:
+            await restart_telegram_cli()
 
     async def reply(self, client, peer, msg_id, text):
         try:
@@ -344,6 +347,13 @@ class Web(object):
                 client.err_nosuchchannel(peer.name)
             elif isinstance(peer, SpecialUser):
                 client.err_nosuchnick(peer.nick)
+        except asyncio.TimeoutError:
+            await restart_telegram_cli()
+
+
+async def restart_telegram_cli():
+    # TODO
+    os.execl(sys.executable, sys.executable, *sys.argv)
 
 ### IRC utilities
 
@@ -918,6 +928,7 @@ class SpecialCommands:
 class Channel:
     def __init__(self, name):
         self.name = name
+        self.peer_type = ''
         self.topic = ''
         self.mode = 'n'
         self.members = {}
@@ -1208,7 +1219,6 @@ class StatusChannel(Channel):
 class SpecialChannel(Channel):
     def __init__(self, record):
         super().__init__(None)
-        self.peer_type = ''
         self.peer_id = record['peer_id']
         self.joined = {}      # `client` has not joined
         self.explicit_parted = set()
@@ -1472,6 +1482,7 @@ class Client:
             channel.on_part(self, None)
         server.remove_nick(self.nick)
         self.nick = None
+        server.clients.discard(self)
 
     def reply(self, msg, *args):
         '''Respond to the client's request'''
@@ -1587,11 +1598,12 @@ class Client:
             info('%s registered', self.prefix)
             self.reply('001 {} :Hi, welcome to IRC', self.nick)
             self.reply('002 {} :Your host is {}', self.nick, server.name)
+            self.reply('005 {} PREFIX=(ohv)@%+ CHANTYPES=!#&+ CHANMODES=,,,m SAFELIST :are supported by this server', self.nick)
             Command.lusers(self)
             Command.motd(self)
 
             Command.join(self, StatusChannel.instance.name)
-            StatusChannel.instance.respond(self, 'Visit web.telegram.org and then you will see your friend list in this channel')
+            StatusChannel.instance.respond(self, 'Your contacts are listed in this channel')
 
     def handle_command(self, command, args):
         cmd = irc_lower(command)
@@ -1626,6 +1638,9 @@ class Client:
                     sent_ping = True
                     self.write('PING :'+server.name)
                     continue
+            except ConnectionResetError:
+                self.disconnect('ConnectionResetError')
+                break
             if not line:
                 return
             line = line.rstrip(b'\r\n').decode('utf-8', 'ignore')
@@ -1654,6 +1669,7 @@ class Client:
             except:
                 traceback.print_exc()
                 self.disconnect('client error')
+                break
 
     def ctcp(self, peer, msg):
         async def download():
@@ -1822,8 +1838,8 @@ class SpecialUser:
 
 class Server:
     valid_nickname = re.compile(r"^[][\`_^{|}A-Za-z][][\`_^{|}A-Za-z0-9-]{0,50}$")
-    # initial character `+` is reserved for special channels
-    # initial character `&` is reserved for special chatrooms
+    # initial character `+` is reserved for StatusChannel
+    # initial character `&` is reserved for SpecialChannel
     valid_channelname = re.compile(r"^[#!][^\x00\x07\x0a\x0d ,:]{0,50}$")
 
     def __init__(self):
