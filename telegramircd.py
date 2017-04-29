@@ -60,31 +60,32 @@ class Web(object):
     async def send_command(self, command, timeout=None):
         if timeout is None:
             timeout = options.telegram_cli_timeout
-        reader, writer = await asyncio.open_connection(host='localhost', port=options.telegram_cli_port, loop=self.loop)
-        writer.write((command+'\n').encode())
-        buf = b''
-        retry = 10
-        while 1:
-            retry -= 1
-            if retry <= 0:
-                raise TelegramCliFail('fail')
-            try:
-                buf += await asyncio.wait_for(reader.read(4096), timeout=timeout)
-                data = json.loads(buf.decode().splitlines()[1])
-                if isinstance(data, dict) and data.get('result') == 'FAIL':
-                    raise TelegramCliFail(data['error'])
-            except asyncio.TimeoutError:
-                raise
-            except UnicodeDecodeError:
-                continue
-            except json.decoder.JSONDecodeError as ex:
-                if ex.msg == 'Unterminated string starting at' or ex.msg.startswith('Expecting'):
+        try:
+            reader, writer = await asyncio.open_connection(host='localhost', port=options.telegram_cli_port, loop=self.loop)
+            writer.write((command+'\n').encode())
+            buf = b''
+            retry = 10
+            while 1:
+                retry -= 1
+                if retry <= 0:
+                    raise TelegramCliFail('fail')
+                try:
+                    buf += await asyncio.wait_for(reader.read(4096), timeout=timeout)
+                    data = json.loads(buf.decode().splitlines()[1])
+                    if isinstance(data, dict) and data.get('result') == 'FAIL':
+                        raise TelegramCliFail(data['error'])
+                except UnicodeDecodeError:
                     continue
-                raise
-            else:
-                return data
-            finally:
-                writer.close()
+                except json.decoder.JSONDecodeError as ex:
+                    if ex.msg == 'Unterminated string starting at' or ex.msg.startswith('Expecting'):
+                        continue
+                    raise
+                else:
+                    return data
+                finally:
+                    writer.close()
+        except:  # asyncio.TimeoutError, ...
+            await self.restart_telegram_cli()
 
     async def handle_media(self, type, request):
         id = re.sub(r'\..*', '', request.match_info.get('id'))
@@ -117,7 +118,7 @@ class Web(object):
             try:
                 unit = await self.proc.stdout.read(4096)
                 if not unit:
-                    await restart_telegram_cli()
+                    await self.restart_telegram_cli()
                     continue
                 buf += unit
                 while buf:
@@ -162,6 +163,16 @@ class Web(object):
             '--disable-colors', '--disable-readline', '--json', '-P', str(options.telegram_cli_port),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, loop=self.loop)
 
+    async def restart_telegram_cli():
+        if self.proc:
+            try:
+                self.proc.terminate()
+                time.sleep(1)
+                self.proc.kill()
+            except:
+                pass
+        os.execl(sys.executable, sys.executable, *sys.argv)
+
     def start(self, listens, port, loop):
         self.loop = loop
         self.app = aiohttp.web.Application()
@@ -178,8 +189,11 @@ class Web(object):
         async def poll():
             while 1:
                 await asyncio.sleep(options.telegram_cli_poll_interval)
-                for peer_id in options.telegram_cli_poll_channels:
-                    self.proc.stdin.write('history channel#{} {}\n'.format(peer_id, options.telegram_cli_poll_limit).encode())
+                try:
+                    for peer_id in options.telegram_cli_poll_channels:
+                        self.proc.stdin.write('history channel#{} {}\n'.format(peer_id, options.telegram_cli_poll_limit).encode())
+                except:
+                    await self.restart_telegram_cli()
 
         if options.telegram_cli_poll_channels:
             self.poll = loop.create_task(poll())
@@ -325,7 +339,7 @@ class Web(object):
             except TelegramCliFail as ex:
                 client.err_cannotsendtochan(peer.nick, 'Cannot send the file')
             except asyncio.TimeoutError:
-                await restart_telegram_cli()
+                await self.restart_telegram_cli()
             os.unlink(filename)
 
     async def msg(self, client, peer, text):
@@ -337,7 +351,7 @@ class Web(object):
             elif isinstance(peer, SpecialUser):
                 client.err_nosuchnick(peer.nick)
         except asyncio.TimeoutError:
-            await restart_telegram_cli()
+            await self.restart_telegram_cli()
 
     async def reply(self, client, peer, msg_id, text):
         try:
@@ -348,12 +362,8 @@ class Web(object):
             elif isinstance(peer, SpecialUser):
                 client.err_nosuchnick(peer.nick)
         except asyncio.TimeoutError:
-            await restart_telegram_cli()
+            await self.restart_telegram_cli()
 
-
-async def restart_telegram_cli():
-    # TODO
-    os.execl(sys.executable, sys.executable, *sys.argv)
 
 ### IRC utilities
 

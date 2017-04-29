@@ -15,9 +15,9 @@ IRC服务器默认监听127.0.0.1:6669 (IRC)和127.0.0.1:9000 (HTTPS + WebSocket
 
 可以把HTTPS私钥证书用作IRC over TLS私钥证书。使用WeeChat的话，如果觉得让WeeChat信任证书比较麻烦(gnutls会检查hostname)，可以用：
 ```
-set irc.server.telegram.ssl on
-set irc.server.telegram.ssl_verify off
-set irc.server.telegram.password yourpassword
+/set irc.server.telegram.ssl on
+/set irc.server.telegram.ssl_verify off
+/set irc.server.telegram.password yourpassword
 ```
 
 ### 其他发行版
@@ -26,18 +26,29 @@ set irc.server.telegram.password yourpassword
 - `pip install -r requirements.txt`
 - `./telegramircd.py`
 
-### 自签名证书
+### 用HTTPS伺服文件链接
 
-`openssl req -newkey rsa:2048 -nodes -keyout key.pem -x509 -out cert.pem -subj '/CN=127.0.0.1' -dates 9999`.
+加上额外一些选项`--http-key /etc/telegramircd/key.pem --http-cert /etc/telegramircd/cert.pem --http-url https://127.1:9003`。文件链接就会显示为`https://127.1:9003/document/$id`.
+
+你需要把创建CA certificate/key，并用它签署另一个certificate/key。
+
+```zsh
+openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key.pem -out ca.cert.pem -days 9999 -subj '/CN=127.0.0.1'
+openssl req -new -newkey rsa:2048 -nodes -keyout key.pem -subj '/CN=127.0.0.1' |
+  openssl x509 -req -out cert.pem -CAkey ca.key.pem -CA ca.cert.pem -set_serial 2 -days 9999 -extfile <(
+    printf "subjectAltName = IP:127.0.0.1, DNS:localhost")
+```
 
 Chrome/Chromium
 
-- 访问`chrome://settings/certificates`，导入cert.pem，在Authorities标签页选择该证书，Edit->Trust this certificate for identifying websites.
+- 访问`chrome://settings/certificates`，导入`ca.cert.pem`，在Authorities标签页选择该证书，Edit->Trust this certificate for identifying websites.
 - 安装Switcheroo Redirector扩展，把<https://web.telegram.org/js/app.js>重定向至<https://127.0.0.1:9003/app.js>。
+
+IP或域名必须匹配`subjectAlternativeName`。Chrome从版本58起不再支持用证书中的`commonName`匹配IP/域名，参见<https://developers.google.com/web/updates/2017/03/chrome-58-deprecations#remove_support_for_commonname_matching_in_certificates>。
 
 Firefox
 
-- 安装Redirector扩展，重定向js，设置` Applies to: Main window (address bar), Scripts`。
+- 安装Redirector扩展，重定向js，设置`Applies to: Main window (address bar), Scripts`。
 - 访问重定向后的js URL，报告Your connection is not secure，Advanced->Add Exception->Confirm Security Exception
 
 ## 使用
