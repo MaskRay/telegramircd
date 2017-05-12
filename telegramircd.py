@@ -57,7 +57,7 @@ class Web(object):
         self.recent_messages = deque()
         self.proc = None
 
-    async def send_command(self, command, timeout=None):
+    async def send_command(self, command, timeout=None, important=False):
         if timeout is None:
             timeout = options.telegram_cli_timeout
         try:
@@ -84,8 +84,11 @@ class Web(object):
                     return data
                 finally:
                     writer.close()
-        except:  # asyncio.TimeoutError, ...
-            await self.restart_telegram_cli()
+        except Exception as ex:  # asyncio.TimeoutError, ...
+            warning('send_command %r', command)
+            traceback.print_exc(ex)
+            if important:
+                await self.restart_telegram_cli()
 
     async def handle_media(self, type, request):
         id = re.sub(r'\..*', '', request.match_info.get('id'))
@@ -163,7 +166,8 @@ class Web(object):
             '--disable-colors', '--disable-readline', '--json', '-P', str(options.telegram_cli_port),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, loop=self.loop)
 
-    async def restart_telegram_cli():
+    async def restart_telegram_cli(self):
+        traceback.print_stack()
         if self.proc:
             try:
                 self.proc.terminate()
@@ -189,11 +193,8 @@ class Web(object):
         async def poll():
             while 1:
                 await asyncio.sleep(options.telegram_cli_poll_interval)
-                try:
-                    for peer_id in options.telegram_cli_poll_channels:
-                        self.proc.stdin.write('history channel#{} {}\n'.format(peer_id, options.telegram_cli_poll_limit).encode())
-                except:
-                    await self.restart_telegram_cli()
+                for peer_id in options.telegram_cli_poll_channels:
+                    self.proc.stdin.write('history channel#{} {}\n'.format(peer_id, options.telegram_cli_poll_limit).encode())
 
         if options.telegram_cli_poll_channels:
             self.poll = loop.create_task(poll())
@@ -344,7 +345,7 @@ class Web(object):
 
     async def msg(self, client, peer, text):
         try:
-            await self.send_command('msg {} {}'.format(peer.peer, json.dumps(text, ensure_ascii=False)))
+            await self.send_command('msg {} {}'.format(peer.peer, json.dumps(text, ensure_ascii=False)), important=True)
         except TelegramCliFail as ex:
             if isinstance(peer, SpecialChannel):
                 client.err_nosuchchannel(peer.name)
@@ -355,7 +356,7 @@ class Web(object):
 
     async def reply(self, client, peer, msg_id, text):
         try:
-            await self.send_command('reply {} {}'.format(msg_id, json.dumps(text, ensure_ascii=False)))
+            await self.send_command('reply {} {}'.format(msg_id, json.dumps(text, ensure_ascii=False)), important=True)
         except TelegramCliFail as ex:
             if isinstance(peer, SpecialChannel):
                 client.err_nosuchchannel(peer.name)
@@ -2122,6 +2123,10 @@ def main():
         sys.excepthook = ExceptionHook()
     server = Server()
     web = Web(http_tls)
+
+    def exception_handler(loop, context):
+        server.loop.create_task(web.restart_telegram_cli())
+    loop.set_exception_handler(exception_handler)
 
     server.start(loop, irc_tls)
     web.start(options.http_listen if options.http_listen else options.listen,
