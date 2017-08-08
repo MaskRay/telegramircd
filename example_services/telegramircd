@@ -1,0 +1,25 @@
+#!/sbin/openrc-run
+
+USER=nobody
+
+description="IRC server capable of controlling Telegram"
+
+depend(){
+   need net logger
+}
+
+start() {
+   ebegin "Starting telegramircd"
+   start-stop-daemon --wait 1000 -b --start \
+   --exec /usr/bin/python3  -u "$USER" \
+   --make-pidfile --pidfile /run/telegramircd.pid \
+   -- /usr/bin/telegramircd -c /etc/telegramircd/config 
+   eend $?
+}
+
+stop() {
+   ebegin "Stopping telegramircd"
+   start-stop-daemon --stop --exec /usr/bin/telegramircd \
+   --pidfile /run/telegramircd.pid
+   eend $?
+}
