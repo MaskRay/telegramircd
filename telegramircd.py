@@ -879,7 +879,7 @@ class SpecialCommands:
             if isinstance(to, SpecialChannel):
                 for c in server.auth_clients():
                     if c not in to.joined and 'm' not in to.mode:
-                        if options.join == 'auto' and c not in to.explicit_parted or options.join == 'new':
+                        if options.join in ('all', 'auto') and c not in to.explicit_parted or options.join == 'new':
                             c.auto_join(to)
             for client in server.auth_clients():
                 if isinstance(to, Channel) and client not in to.joined or (
@@ -1954,7 +1954,8 @@ class Server:
             room = SpecialChannel(record)
             self.peer_id2special_room[room.peer_id] = room
             if options.join == 'all':
-                self.auto_join(room)
+                for client in self.auth_clients():
+                    client.auto_join(room)
         self.name2special_room[irc_lower(room.name)] = room
         return room
 
