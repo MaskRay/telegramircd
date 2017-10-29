@@ -4,12 +4,30 @@
 
 telegramircd is an IRC server that enables IRC clients to send and receive messages from Telegram.
 
+telegramircd uses [Telethon](https://github.com/LonamiWebs/Telethon) to communicate with Telegram servers.
+
+## Installation
+
+- `git clone -b telethon https://github.com/MaskRay/telegramircd && cd telegramircd`
+- python >= 3.5
+- `pip3 install -r requirements.txt`
+
+- Visit <https://my.telegram.org/apps>, create an App, and get `app_id, app_hash`.
+- Create a Telethon client. Read <https://github.com/LonamiWebs/Telethon>, execute `TelegramClient('telegramircd', api_id, api_hash)`, login, and get a session file `telegramircd.session` in current working directory.
+- Update `config`: change `tg-api-id, tg-api-hash` to `app_id, app_hash`; change `tg-session-dir` to the directory containing `telegramircd.session`
+- `./telegramircd.py -c config`
+
 ### Arch Linux
 
-- `aur/telegramircd-git`
-- `aur/telegram-cli-git`. telegramircd uses the JSON output of telegram-cli to communicate with Telegram servers. Run `telegram-cli` and login to get credential before using telegramircd.
-- Create `/etc/systemd/system/telegramircd.service` from the template `/lib/systemd/system/telegramircd.service`. Change the `User=` and `Group=` fields, otherwise `telegram-cli` cannot load credential stored in `~/.telegram-cli/`.
-- `systemctl start telegramircd`
+The `git` and `pip3 install -r requirements.txt` steps can be replaced with:
+
+- Install `aur/telegramircd-git`
+- `pip install --user telethon`
+- Create `/etc/systemd/system/telegramircd.service` from the template `/lib/systemd/system/telegramircd.service`. Change the `User=` and `Group=` fields, otherwise `telethon` installed by `pip` cannot be accessed.
+
+Run `systemctl start telegramircd`.
+
+## Running telegramircd
 
 `telegramircd.py` (the server) will listen on 127.0.0.1:6669 (IRC) and 127.0.0.1:9003 (HTTPS + WebSocket over TLS).
 
@@ -19,13 +37,6 @@ If you run the server on another machine, it is recommended to set up IRC over T
 /set irc.server.telegram.ssl_verify off
 /set irc.server.telegram.password yourpassword
 ```
-
-### Not Arch Linux
-
-- python >= 3.5
-- `pip install -r requirements.txt`
-- Install telegram-cli
-- `./telegramircd.py --http-url http://localhost:9003`
 
 ### Serve file links via HTTPS
 

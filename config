@@ -1,5 +1,10 @@
 # See https://pypi.python.org/pypi/ConfigArgParse for syntax
 
+tg-api-id: 00000
+tg-api-hash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+#tg-session: telegramircd
+#tg-session-dir: .
+
 # HTTP/WebSocket related options
 # Use HTTPS to server links if at least one of http-cert or http-key is specified
 #http-cert: /etc/telegramircd/cert.pem

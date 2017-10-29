@@ -4,6 +4,14 @@ from configargparse import ArgParser, Namespace
 from collections import deque
 from datetime import datetime, timezone
 from itertools import chain
+
+from telethon import TelegramClient
+import telethon.tl as tl
+#from telethon.tl.functions.contacts import GetContactsRequest
+import telethon.tl.types as tg_types
+import telethon.tl.functions.contacts
+import telethon.tl.functions.messages
+
 import aiohttp.web, asyncio, base64, inspect, json, logging.handlers, mimetypes, os, pprint, random, re, \
     shlex, signal, socket, ssl, string, sys, tempfile, time, traceback, uuid, weakref
 
@@ -56,51 +64,21 @@ class Web(object):
         self.id2message = {}
         self.recent_messages = deque()
         self.proc = None
-
-    async def send_command(self, command, timeout=None, important=False):
-        if timeout is None:
-            timeout = options.telegram_cli_timeout
-        try:
-            reader, writer = await asyncio.open_connection(host='localhost', port=options.telegram_cli_port, loop=self.loop)
-            writer.write((command+'\n').encode())
-            buf = b''
-            retry = 10
-            while 1:
-                retry -= 1
-                if retry <= 0:
-                    raise TelegramCliFail('fail')
-                try:
-                    buf += await asyncio.wait_for(reader.read(4096), timeout=timeout)
-                    data = json.loads(buf.decode().splitlines()[1])
-                    if isinstance(data, dict) and data.get('result') == 'FAIL':
-                        raise TelegramCliFail(data['error'])
-                except UnicodeDecodeError:
-                    continue
-                except json.decoder.JSONDecodeError as ex:
-                    if ex.msg == 'Unterminated string starting at' or ex.msg.startswith('Expecting'):
-                        continue
-                    raise
-                else:
-                    return data
-                finally:
-                    writer.close()
-        except Exception as ex:  # asyncio.TimeoutError, ...
-            warning('send_command %r', command)
-            traceback.print_exc(ex)
-            if important:
-                await self.restart_telegram_cli()
+        self.authorized = False
+        self.two_step = False
 
     async def handle_media(self, type, request):
         id = re.sub(r'\..*', '', request.match_info.get('id'))
         if id not in self.id2media:
             return aiohttp.web.Response(status=404, text='Not Found')
         try:
-            msg_id, filename = self.id2media[id]
+            media, filename = self.id2media[id]
             if not filename:
                 try:
-                    data = await self.send_command('load_{} {}'.format(type, msg_id))
-                    filename = data['result']
-                    self.id2media[id] = (msg_id, filename)
+                    with tempfile.NamedTemporaryFile(dir=options.tg_media_dir, suffix='.jpg') as temp:
+                        filename = temp.name
+                    self.proc.download_media(media, filename)
+                    self.id2media[id] = (media, filename)
                 except asyncio.TimeoutError:
                     return aiohttp.web.Response(status=504, text='I used to live in 504A')
                 except TelegramCliFail as ex:
@@ -114,65 +92,25 @@ class Web(object):
     async def handle_document(self, request):
         return await self.handle_media('document', request)
 
-    async def handle_telegram_cli(self):
-        decoder = json.JSONDecoder()
-        buf = b''
-        while 1:
-            try:
-                unit = await self.proc.stdout.read(4096)
-                if not unit:
-                    await self.restart_telegram_cli()
-                    continue
-                buf += unit
-                while buf:
-                    i0 = buf.find(b'{')
-                    i1 = buf.find(b'[')
-                    if 0 <= i0 and (i0 < i1 or i1 < 0):
-                        buf = buf[i0:]
-                    elif 0 <= i1 and (i1 < i0 or i0 < 0):
-                        buf = buf[i1:]
-                        # not an array of objects
-                        if len(buf) > 1 and chr(buf[1]) not in ']{':
-                            buf = buf[2:]
-                            continue
-                    else:
-                        break
-                    try:
-                        decoded = buf.decode()
-                        data, j = decoder.raw_decode(decoded)
-                        buf = decoded[j:].encode()
-                        server.on_telegram_cli(data)
-                    except UnicodeDecodeError:
-                        break
-                    except json.decoder.JSONDecodeError as ex:
-                        if ex.msg == 'Unterminated string starting at' or ex.msg.startswith('Expecting'):
-                            break
-                        buf = buf[1:]
-                        break
-            except Exception as ex:
-                info('client error')
-                traceback.print_exc()
-                break
-
-    async def run_telegram_cli(self):
+    def run_telethon(self):
         if self.proc:
-            try:
-                self.proc.terminate()
-                time.sleep(1)
-                self.proc.kill()
-            except:
-                pass
-        self.proc = await asyncio.create_subprocess_exec(*shlex.split(options.telegram_cli_command),
-            '--disable-colors', '--disable-readline', '--json', '-P', str(options.telegram_cli_port),
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, loop=self.loop)
+            self.proc.disconnect()
+        self.proc = TelegramClient(options.tg_session, options.tg_api_id, options.tg_api_hash, update_workers=4)
+        if not self.proc.connect():
+            error('Failed to connect to Telegram server')
+            sys.exit(2)
+        self.authorized = self.proc.is_user_authorized()
+        if not self.authorized and not options.tg_phone:
+            error('Not authorized. Please set --tg-phone')
+            sys.exit(2)
+        self.proc.add_update_handler(server.on_telegram_update)
 
     async def restart_telegram_cli(self):
         traceback.print_stack()
         if self.proc:
             try:
-                self.proc.terminate()
+                self.proc.disconnect()
                 time.sleep(1)
-                self.proc.kill()
             except:
                 pass
         os.execl(sys.executable, sys.executable, *sys.argv)
@@ -186,21 +124,21 @@ class Web(object):
         for i in listens:
             self.srv.append(loop.run_until_complete(
                 loop.create_server(self.handler, i, port, ssl=self.tls)))
-        loop.run_until_complete(self.run_telegram_cli())
-        loop.create_task(self.handle_telegram_cli())
-        loop.create_task(self.init())
+        self.run_telethon()
+        if self.authorized:
+            self.init()
 
-        async def poll():
-            while 1:
-                await asyncio.sleep(options.telegram_cli_poll_interval)
-                for peer_id in options.telegram_cli_poll_channels:
-                    self.proc.stdin.write('history channel#{} {}\n'.format(peer_id, options.telegram_cli_poll_limit).encode())
+        #async def poll():
+        #    while 1:
+        #        await asyncio.sleep(options.tg_poll_interval)
+        #        for peer_id in options.tg_poll_channels:
+        #            self.proc.stdin.write('history channel#{} {}\n'.format(peer_id, options.tg_poll_limit).encode())
 
-        if options.telegram_cli_poll_channels:
-            self.poll = loop.create_task(poll())
+        #if options.telegram_cli_poll_channels:
+        #    self.poll = loop.create_task(poll())
 
     def stop(self):
-        self.proc.terminate()
+        self.proc.disconnect()
         for i in self.srv:
             i.close()
             self.loop.run_until_complete(i.wait_closed())
@@ -214,48 +152,47 @@ class Web(object):
                 except:
                     pass
 
-    def append_history(self, data):
+    def append_history(self, record):
         if len(self.recent_messages) >= 10000:
             msg = self.recent_messages.popleft()
             del self.id2message[msg['id']]
-        self.recent_messages.append(data)
-        self.id2message[data['id']] = data
+        self.recent_messages.append(record)
+        self.id2message[record['id']] = record
 
-    async def channel_get_admins(self, channel):
+    # TODO admin channel.update_admins(members)
+    def channel_get_participants(self, channel):
+        tg_users = []
         offset = 0
-        members = []
-        while 1:
-            data = await self.send_command('channel_get_admins {} 100 {}'.format(channel.peer, offset))
-            if len(data):
-                members.extend(data)
-                offset = len(members)
-            else:
-                break
-        channel.update_admins(members)
+        while True:
+            participants = self.proc.invoke(tl.functions.channels.GetParticipantsRequest(
+                channel.tg_room,
+                tl.types.ChannelParticipantsSearch(''),
+                offset,
+                100,
+            ))
+            if not participants.users: break
+            tg_users.extend(participants.users)
+            offset += len(participants.users)
+        channel.update_members(tg_users)
 
-    async def channel_get_members(self, channel):
-        offset = 0
-        members = []
+    def channel_invite(self, client, channel, user):
         try:
-            while 1:
-                data = await self.send_command('channel_get_members {} 100 {}'.format(channel.peer, offset))
-                if len(data):
-                    members.extend(data)
-                    offset = len(members)
-                else:
-                    break
-            channel.update_members(members)
-        except TelegramCliFail as ex:
-            traceback.print_exc()
-
-    async def channel_invite(self, channel, user):
-        if channel.peer_type == 'channel':
-            await self.send_command('channel_invite {} {}'.format(channel.peer, user.peer))
-        else:
-            await self.send_command('chat_add_user {} {}'.format(channel.peer, user.peer))
+            if channel.is_type(tl.types.PeerChannel):
+                # TODO
+                pass
+            elif channel.is_type(tl.types.PeerChat):
+                self.proc.invoke(tl.functions.messages.AddChatUserRequest(
+                    channel.peer.chat_id,
+                    self.proc.get_input_entity(user.user_id),
+                    0,
+                ))
+        except telethon.errors.rpc_error_list.UserAlreadyParticipantError:
+            client.err_useronchannel(user.nick, channel.name)
+        except telethon.errors.rpc_base_errors.RPCError:
+            pass
 
     async def channel_set_admin(self, client, channel, user, ty):
-        if channel.peer_type == 'channel':
+        if channel.is_type(tl.types.PeerChannel):
             try:
                 await self.send_command('channel_set_admin {} {} {}'.format(channel.peer, user.peer, ty))
             except (asyncio.TimeoutError, TelegramCliFail):
@@ -273,97 +210,119 @@ class Web(object):
         else:
             client.err_chanoprivsneeded(channel.name)
 
-    async def channel_kick(self, client, channel, user):
+    def channel_kick(self, client, channel, user):
         try:
-            if channel.peer_type == 'channel':
-                await self.send_command('channel_kick {} {}'.format(channel.peer, user.peer))
-            else:
-                await self.send_command('chat_del_user {} {}'.format(channel.peer, user.peer))
-        except TelegramCliFail:
-            client.err_chanoprivsneeded(channel.name)
+            if channel.is_type(tl.types.PeerChannel):
+                pass
+            elif channel.is_type(tl.types.PeerChat):
+                self.proc.invoke(tl.functions.messages.DeleteChatUserRequest(
+                    channel.peer.chat_id,
+                    self.proc.get_input_entity(user.user_id),
+                ))
+        except telethon.errors.rpc_error_list.UserNotParticipantError:
+            client.err_usernotinchannel(user.nick, channel.name)
+        except telethon.errors.rpc_base_errors.RPCError:
+            pass
 
-    async def channel_list(self):
-        for data in await self.send_command('channel_list'):
-            if not (data['flags'] & TGLCF_DEACTIVATED):
-                server.ensure_special_room(data)
+    #async def channel_list(self):
+    #    for data in await self.send_command('channel_list'):
+    #        if not (data['flags'] & TGLCF_DEACTIVATED):
+    #            server.ensure_special_room(data)
 
-    async def chat_info(self, channel):
-        data = await self.send_command('chat_info {}'.format(channel.peer))
-        channel.update_members(data['members'])
+    #async def chat_info(self, channel):
+    #    data = await self.send_command('chat_info {}'.format(channel.peer))
+    #    channel.update_members(data['members'])
+    #from telethon.tl.functions.channels import GetParticipantsRequest
+    #from telethon.tl.types import ChannelParticipantsSearch
+    #from time import sleep
+    #
+    #offset = 0
+    #limit = 100
+    #all_participants = []
+    #
+    #while True:
+    #    participants = client.invoke(GetParticipantsRequest(
+    #        channel, ChannelParticipantsSearch(''), offset, limit
+    #    ))
+    #    if not participants.users:
+    #        break
+    #    all_participants.extend(participants.users)
+    #    offset += len(participants.users)
+    #    # sleep(1)  # This line seems to be optional, no guarantees!
 
-    async def contact_list(self):
-        for data in await self.send_command('contact_list'):
-            server.ensure_special_user(data)
+    def contact_list(self):
+        contacts = self.proc(tl.functions.contacts.GetContactsRequest(0))
+        for tg_user in contacts.users:
+            server.ensure_special_user(tg_user.id, tg_user)
 
-    async def dialog_list(self):
-        for data in await self.send_command('dialog_list'):
-            if data['peer_type'] in ('channel', 'chat'):
-                if not (data['flags'] & TGLCF_DEACTIVATED):
-                    server.ensure_special_room(data)
-            elif data['peer_type'] == 'user':
-                server.ensure_special_user(data)
+    def channel_list(self):
+        # TODO retrieve all Channel/Chat
+        _, entities = self.proc.get_dialogs(20)
+        for entity in entities:
+            if isinstance(entity, (tl.types.Channel, tl.types.Chat)):
+                server.ensure_special_room(entity.id, entity)
 
-    async def get_self(self):
-        data = await self.send_command('get_self')
-        server.peer_id = data['peer_id']
+    def message_get(self, id):
+        messages = self.proc(tl.functions.messages.GetMessagesRequest([id])).messages
+        return messages[0] if messages else None
 
-    async def init(self):
+    def get_self(self):
+        data = self.proc.get_me()
+        server.user_id = data.id
+
+    def init(self):
         try:
-            await web.get_self()
-            await web.channel_list()
-            await web.contact_list()
-            await web.dialog_list()
+            web.get_self()
+            web.channel_list()
+            web.contact_list()
         except Exception as ex:
             traceback.print_exc()
 
-    async def mark_read(self, peer):
-        await self.send_command('mark_read {}'.format(peer.peer))
+    def mark_read(self, peer, max_id):
+        self.proc.send_read_acknowledge(peer, max_id=max_id)
 
     async def channel_members(self, channel):
         try:
-            if channel.peer_type == 'chat':
-                await self.chat_info(channel)
-            elif channel.peer_type == 'channel':
-                await self.channel_get_members(channel)
-                await self.channel_get_admins(channel)
+            if channel.is_type(tl.types.PeerChannel):
+                self.channel_get_participants(channel)
+            elif channel.is_type(tl.types.PeerChat):
+                # FIXME self.chat_info(channel)
+                pass
         except Exception as ex:
+            error('channel_members %r', channel)
             traceback.print_exc()
 
-    async def send_file(self, client, peer, filename, body):
+    def send_file(self, client, peer, filename, body):
         with tempfile.TemporaryDirectory() as directory:
             filename = os.path.join(directory, filename)
             try:
                 with open(filename, 'wb') as f:
                     f.write(body)
                     f.flush()
-                    await self.send_command('send_file {} {}'.format(peer.peer, f.name))
+                self.proc.send_file(peer, f.name)
             except TelegramCliFail as ex:
                 client.err_cannotsendtochan(peer.nick, 'Cannot send the file')
-            except asyncio.TimeoutError:
-                await self.restart_telegram_cli()
             os.unlink(filename)
 
-    async def msg(self, client, peer, text):
+    def msg(self, client, peer, text):
         try:
-            await self.send_command('msg {} {}'.format(peer.peer, json.dumps(text, ensure_ascii=False)), important=True)
-        except TelegramCliFail as ex:
+            self.proc.send_message(peer, text)
+        except telethon.errors.rpc_base_errors.RPCError:
+            traceback.print_exc()
             if isinstance(peer, SpecialChannel):
                 client.err_nosuchchannel(peer.name)
             elif isinstance(peer, SpecialUser):
                 client.err_nosuchnick(peer.nick)
-        except asyncio.TimeoutError:
-            await self.restart_telegram_cli()
 
-    async def reply(self, client, peer, msg_id, text):
+    def reply(self, client, peer, msg_id, text):
         try:
-            await self.send_command('reply {} {}'.format(msg_id, json.dumps(text, ensure_ascii=False)), important=True)
-        except TelegramCliFail as ex:
+            self.proc.send_message(peer, text, reply_to=msg_id)
+        except telethon.errors.rpc_base_errors.RPCError:
+            traceback.print_exc()
             if isinstance(peer, SpecialChannel):
                 client.err_nosuchchannel(peer.name)
             elif isinstance(peer, SpecialUser):
                 client.err_nosuchnick(peer.nick)
-        except asyncio.TimeoutError:
-            await self.restart_telegram_cli()
 
 
 ### IRC utilities
@@ -401,7 +360,7 @@ def process_text(to, text):
             if SS is not None:
                 SS = int(SS)
             for msg in reversed(web.recent_messages):
-                if msg['to'] == to.peer_id:
+                if msg['to'] is to:
                     dt = datetime.fromtimestamp(msg['date'])
                     if dt.hour == HH and dt.minute == MM and (SS is None or dt.second == SS):
                         reply = msg['id']
@@ -414,9 +373,9 @@ def process_text(to, text):
             in_channel = isinstance(to, SpecialChannel)
             if which > 0:
                 for msg in reversed(web.recent_messages):
-                    if in_channel and msg['to'] == to.peer_id and msg['from'] != server or \
-                            not in_channel and msg['from'] == to and msg['to'] == server.peer_id:
-                        which -= 1 if 'media' in msg else len(msg['text'].splitlines())
+                    if (msg['to'] is to and msg['from'] is not server) if in_channel \
+                            else (msg['from'] is to and msg['to'] is server):
+                        which -= 1 if 'media' in msg else len(msg['message'].splitlines())
                         if which <= 0:
                             reply = msg['id']
                             break
@@ -461,14 +420,15 @@ def irc_log(where, peer, local_time, sender, line):
 
 
 def irc_privmsg(client, command, to, text):
-    if command == 'PRIVMSG' and client.ctcp(to, text):
+    if command == 'PRIVMSG' and client.ctcp(to.peer, text):
         return
 
     def send():
         if to.privmsg_reply:
-            server.loop.create_task(web.reply(client, to, reply, to.privmsg_text))
+            print('+++++', client, to.peer, reply, to.privmsg_text)
+            web.reply(client, to.peer, reply, to.privmsg_text)
         else:
-            server.loop.create_task(web.msg(client, to, to.privmsg_text))
+            web.msg(client, to.peer, to.privmsg_text)
         to.last_text_by_client[client] = to.privmsg_text
         to.privmsg_reply = None
         to.privmsg_text = ''
@@ -502,7 +462,7 @@ def registered(v):
 
 class Command:
     @staticmethod
-    @registered(3)
+    @registered(7)
     def authenticate(client, arg):
         if arg.upper() == 'PLAIN':
             client.write('AUTHENTICATE +')
@@ -525,7 +485,7 @@ class Command:
         pass
 
     @staticmethod
-    @registered(3)
+    @registered(7)
     def cap(client, *args):
         if not args: return
         comm = args[0].lower()
@@ -573,14 +533,19 @@ class Command:
                 for channel in channels:
                     channel.on_part(client, channel.name)
             else:
+                JOINCHAT = 'https://t.me/joinchat/'
                 for channelname in arg.split(','):
-                    if server.has_special_room(channelname):
-                        server.get_special_room(channelname).on_join(client)
+                    # Join via joinchat link
+                    if channelname.startswith(JOINCHAT):
+                        web.proc(tl.functions.messages.ImportChatInviteRequest(channelname[len(JOINCHAT):]))
                     else:
-                        try:
-                            server.ensure_channel(channelname).on_join(client)
-                        except ValueError:
-                            client.err_nosuchchannel(channelname)
+                        if server.has_special_room(channelname):
+                            server.get_special_room(channelname).on_join(client)
+                        else:
+                            try:
+                                server.ensure_channel(channelname).on_join(client)
+                            except ValueError:
+                                client.err_nosuchchannel(channelname)
 
     @staticmethod
     def kick(client, channelname, nick, reason=None):
@@ -608,14 +573,15 @@ class Command:
                 if server.has_channel(channelname):
                     channels.append(server.get_channel(channelname))
         else:
-            server.loop.create_task(web.init())
             channels = set(server.channels.values())
             channels.update(server.name2special_room.values())
             channels = list(channels)
         channels.sort(key=lambda ch: ch.name)
         for channel in channels:
-            client.reply('322 {} {} {} :{}', client.nick, channel.name,
-                         channel.n_members(client), channel.topic)
+            n = channel.n_members(client)
+            if n == 0 and channel.is_type(tl.types.PeerChat):
+                n = channel.tg_room.participants_count
+            client.reply('322 {} {} {} :{}', client.nick, channel.name, n, channel.topic)
         client.reply('323 {} :End of LIST', client.nick)
 
     @staticmethod
@@ -663,7 +629,7 @@ class Command:
         channel.on_names(client)
 
     @staticmethod
-    @registered(3)
+    @registered(7)
     def nick(client, *args):
         if len(options.irc_password) and not client.authenticated:
             client.err_passwdmismatch('NICK')
@@ -672,6 +638,27 @@ class Command:
             client.err_nonicknamegiven()
             return
         server.change_nick(client, args[0])
+
+    @staticmethod
+    @registered(7)
+    def oper(client, _, password):
+        ok = False
+        if web.two_step:
+            web.two_step = False
+            ok = web.proc.sign_in(password=password)
+            if not ok:
+                StatusChannel.instance.respond(client, 'Wrong password. Please type /oper a $login_code; /oper a $password')
+        else:
+            try:
+                ok = web.proc.sign_in(options.tg_phone, password)
+                if not ok:
+                    StatusChannel.instance.respond(client, 'Wrong login code. Please type /oper a $login_code')
+            except SessionPasswordNeededError:
+                web.two_step = True
+                StatusChannel.instance.respond(client, 'Two step verification enabled. Please type /oper a $password')
+        if ok:
+            StatusChannel.instance.respond(client, 'Authorized. Initializing...')
+            web.init()
 
     @staticmethod
     def notice(client, *args):
@@ -687,14 +674,14 @@ class Command:
                 client.err_notonchannel(channelname)
 
     @staticmethod
-    @registered(1)
+    @registered(6)
     def pass_(client, password):
         if len(options.irc_password) and password == options.irc_password:
             client.authenticated = True
             client.register()
 
     @staticmethod
-    @registered(3)
+    @registered(7)
     def ping(client, *args):
         if not args:
             client.err_noorigin()
@@ -702,7 +689,7 @@ class Command:
         client.reply('PONG {} :{}', server.name, args[0])
 
     @staticmethod
-    @registered(3)
+    @registered(7)
     def pong(client, *args):
         pass
 
@@ -711,7 +698,7 @@ class Command:
         Command.notice_or_privmsg(client, 'PRIVMSG', *args)
 
     @staticmethod
-    @registered(3)
+    @registered(7)
     def quit(client, *args):
         client.disconnect(args[0] if args else client.prefix)
 
@@ -794,7 +781,7 @@ class Command:
             client.err_nosuchnick(target)
 
     @staticmethod
-    @registered(1)
+    @registered(6)
     def user(client, user, mode, _, realname):
         if len(options.irc_password) and not client.authenticated:
             client.err_passwdmismatch('USER')
@@ -802,137 +789,6 @@ class Command:
         client.user = user
         client.realname = realname
         client.register()
-
-# See https://github.com/vysheng/tgl/blob/master/tgl-layout.h &
-# https://github.com/vysheng/tgl/blob/master/structures.c
-# for the mappings from https://github.com/telegramdesktop/tdesktop/blob/master/Telegram/SourceFiles/mtproto/scheme.tl to flags used in `tgl`
-TGLCF_DEACTIVATED = 1<<8
-TGLUF_SELF = 1<<19
-TGLUF_CONTACT = 1<<16
-TGLUF_MUTUAL_CONTACT = 1<<17
-TGLUF_BLOCKED = 1<<18
-
-class SpecialCommands:
-    @staticmethod
-    def message(data):
-        if data['id'] in web.id2message:
-            return
-        sender = server.ensure_special_user(data['from'])
-        if 'to' not in data:
-            to = server
-        elif data['to']['peer_type'] == 'user':
-            to = server.ensure_special_user(data['to'])
-        elif data['to']['peer_type'] in ('channel', 'chat'):
-            to = server.ensure_special_room(data['to'])
-        if options.ignore_bot and (
-                sender == server and isinstance(to, SpecialUser) and to.nick.endswith('bot') or
-                isinstance(sender, SpecialUser) and sender.nick.endswith('bot') or to == server):
-            return
-        data['from'] = sender
-        data['to'] = to.peer_id
-        web.append_history(data)
-
-        if 'media' in data:
-            type = data['media']['type']
-            if type == 'geo':
-                text = '[geo] latitude:{} longitude:{}'.format(data['media']['latitude'], data['media']['longitude'])
-            elif type == 'webpage':
-                if 'url' in data:
-                    dic = {}
-                    if 'text' in data:
-                        dic['text'] = data['text']
-                    dic.update(data['media'])
-                    dic.pop('type', None)
-                    text = '[webpage] {}'.format(dic)
-                else:
-                    text = data['text']
-            elif type in ('audio', 'document', 'photo', 'video'):
-                media_id = str(len(web.id2media))
-                text = '[{}] {}/document/{}{}'.format(type, options.http_url, media_id, {'audio': '.mp3', 'photo': '.jpg', 'video': '.mp4'}.get(type, ''))
-                web.id2media[media_id] = (data['id'], None)
-            else: # e.g. contact
-                dic = {}
-                dic.update(data['media'])
-                dic.pop('type', None)
-                text = '[{}] {}'.format(type, dic)
-        elif 'text' in data:
-            text = data['text']
-        else:
-            text = '[unknown] {}'.format(data)
-        for line in text.splitlines():
-            if 'reply_id' in data and data['reply_id'] in web.id2message:
-                refer = web.id2message[data['reply_id']]
-                refer_text = refer.get('text', '').replace('\n', '\\n')
-                if len(refer_text) > 8:
-                    refer_text = refer_text[:8]+'...'
-                user = refer['from']
-                for client in server.auth_clients():
-                    line = '\x0315「Re {}: {}」\x0f{}'.format(client.nick if user == server else user.nick, refer_text, line)
-                    break
-            if to == server or sender == server:
-                client = server.preferred_client()
-                if client:
-                    where = sender if to == server else to
-                    irc_log(where, client if where == server else where, datetime.fromtimestamp(data['date']), client if sender == server else sender, line)
-            else:
-                irc_log(to, to, datetime.fromtimestamp(data['date']), sender, line)
-            if isinstance(to, SpecialChannel):
-                for c in server.auth_clients():
-                    if c not in to.joined and 'm' not in to.mode:
-                        if options.join in ('all', 'auto') and c not in to.explicit_parted or options.join == 'new':
-                            c.auto_join(to)
-            for client in server.auth_clients():
-                if isinstance(to, Channel) and client not in to.joined or (
-                        'echo-message' not in client.capabilities and
-                        sender == server and 'media' not in data and
-                        data['text'] == to.last_text_by_client.get(client)):
-                    continue
-                sender_prefix = client.prefix if sender == server else sender.prefix
-                to_nick = client.nick if to == server else to.nick
-                msg = ':{} PRIVMSG {} :{}'.format(sender_prefix, to_nick, line)
-                tags = []
-                if 'draft/message-tags' in client.capabilities:
-                    tags.append('draft/msgid={}'.format(data['id']))
-                if 'server-time' in client.capabilities:
-                    tags.append('time={}Z'.format(datetime.fromtimestamp(
-                        data['date'], timezone.utc).strftime('%FT%T.%f')[:23]))
-                if tags:
-                    msg = '@{} {}'.format(';'.join(tags), msg)
-                client.write(msg)
-        if options.mark_read == 'always' and isinstance(sender, SpecialUser) and to == server:
-            server.loop.create_task(web.mark_read(sender))
-
-    @staticmethod
-    def online_status(data):
-        user = server.ensure_special_user(data['user'])
-        if user != server:
-            if data['online']:
-                user.unset_umode('a')
-                user.event('AWAY')
-            else:
-                user.set_umode('a')
-                user.event('AWAY', 'away')
-
-    @staticmethod
-    def service(data):
-        if data['action']['type'] == 'chat_add_user':
-            user = server.ensure_special_user(data['action']['user'])
-            if user == server: return
-            channel = server.ensure_special_room(data['to'])
-            if user not in channel.members:
-                channel.on_join(user)
-                if user.is_contact:
-                    channel.voice_event(user)
-                    channel.set_cmode(user, 'v')
-        elif data['action']['type'] == 'chat_del_user':
-            user = server.ensure_special_user(data['action']['user'])
-            channel = server.ensure_special_room(data['to'])
-            if user == server:
-                joined = [client for client in server.auth_clients() if client in channel.joined]
-                for client in joined:
-                    channel.on_part(client)
-            elif user in channel.members:
-                channel.on_part(user)
 
 ### Channels: StandardChannel, StatusChannel, SpecialChannel
 
@@ -1168,7 +1024,7 @@ class StatusChannel(Channel):
                 if isinstance(room, StandardChannel):
                     self.respond(client, '  ' + name)
             self.respond(client, '{} contacts:', im_name)
-            for peer_id, user in server.peer_id2special_user.items():
+            for peer_id, user in server.user_id2special_user.items():
                 if user.is_contact:
                     if pattern is not None and not (pattern in user.username or pattern in user.printname): continue
                     self.respond(client, '  ' + repr(user))
@@ -1200,7 +1056,7 @@ class StatusChannel(Channel):
                 return False
             member.enter(self)
             self.join_event(member)
-            if member.flags & TGLUF_MUTUAL_CONTACT:
+            if member.tg_user.mutual_contact:
                 self.voice_event(member)
                 self.members[member] = 'v'
             else:
@@ -1228,37 +1084,41 @@ class StatusChannel(Channel):
 
 
 class SpecialChannel(Channel):
-    def __init__(self, record):
+    def __init__(self, tg_room):
         super().__init__(None)
-        self.peer_id = record['peer_id']
+        if isinstance(tg_room, tl.types.Channel):
+            self.peer = tl.types.PeerChannel(tg_room.id)
+        elif isinstance(tg_room, tl.types.Chat):
+            self.peer = tl.types.PeerChat(tg_room.id)
+        else:
+            assert False
         self.joined = {}      # `client` has not joined
         self.explicit_parted = set()
-        self.update(record)
+        self.update(tg_room)
         self.log_file = None
         self.last_text_by_client = weakref.WeakKeyDictionary()
+        self.max_id = 0
         self.privmsg_reply = None
         self.privmsg_seq = 0
         self.privmsg_text = ''
 
     def __repr__(self):
         return repr({k: v for k, v in self.__dict__.items()
-            if k in ('flags', 'name', 'peer_id', 'peer_type')})
+            if k in ('flags', 'name', 'peer')})
 
     @property
     def nick(self):
         return self.name
 
-    @property
-    def peer(self):
-        return '{}#{}'.format(self.peer_type, self.peer_id)
+    def is_type(self, type):
+        return isinstance(self.peer, type)
 
-    def update(self, record):
-        self.flags = record['flags']
-        self.peer_type = record['peer_type']
+    def update(self, tg_room):
+        self.tg_room = tg_room
         old_name = getattr(self, 'name', None)
-        base = options.special_channel_prefix  + irc_escape(record['title'])
-        if base == options.special_channel_prefix:
-            base += '.'.join(member.nick for member in self.members)[:20]
+        base = options.special_channel_prefix  + irc_escape(tg_room.title)
+        #if base == options.special_channel_prefix:
+        #    base += '.'.join(member.nick for member in self.members)[:20]
         suffix = ''
         while 1:
             name = base+suffix
@@ -1273,7 +1133,10 @@ class SpecialChannel(Channel):
             self.name = name
             for client in joined:
                 self.on_join(client)
-        topic = '{}#{} {}'.format(self.peer_type, self.peer_id, record['title'].replace('\n', '\\n'))
+        if self.is_type(tl.types.PeerChannel):
+            topic = '{} {}'.format(self.peer.channel_id, tg_room.title.replace('\n', '\\n'))
+        elif self.is_type(tl.types.PeerChat):
+            topic = 'chat#{} {}'.format(self.peer.chat_id, tg_room.title.replace('\n', '\\n'))
         if self.topic != topic:
             self.topic = topic
             for client in server.auth_clients():
@@ -1303,10 +1166,10 @@ class SpecialChannel(Channel):
                 self.set_cmode(user, 'o')
                 self.op_event(user)
 
-    def update_members(self, members):
+    def update_members(self, tg_users):
         seen = {}
-        for member in members:
-            user = server.ensure_special_user(member)
+        for tg_user in tg_users:
+            user = server.ensure_special_user(tg_user.id, tg_user)
             if user != server:
                 seen[user] = 'v' if user.is_contact else ''
         for user in self.members.keys() - seen.keys():
@@ -1385,7 +1248,7 @@ class SpecialChannel(Channel):
             if user in self.members:
                 client.err_useronchannel(nick, self.name)
             else:
-                server.loop.create_task(web.channel_invite(self, user))
+                web.channel_invite(client, self, user)
         else:
             client.err_nosuchnick(nick)
 
@@ -1408,7 +1271,7 @@ class SpecialChannel(Channel):
     def on_kick(self, client, nick, reason):
         if server.has_special_user(nick):
             user = server.get_special_user(nick)
-            server.loop.create_task(web.channel_kick(client, self, user))
+            web.channel_kick(client, self, user)
         else:
             client.err_usernotinchannel(nick, self.name)
 
@@ -1615,6 +1478,11 @@ class Client:
 
             Command.join(self, StatusChannel.instance.name)
             StatusChannel.instance.respond(self, 'Your contacts are listed in this channel')
+            if not web.authorized:
+                StatusChannel.instance.respond(self, 'This session is unauthorized. Requesting login code. Please type /oper a $login_code')
+                web.proc.send_code_request(options.tg_phone)
+            else:
+                StatusChannel.instance.respond(self, 'Reuse {}.session . Initializing...', options.tg_session)
 
     def handle_command(self, command, args):
         cmd = irc_lower(command)
@@ -1624,7 +1492,14 @@ class Client:
             self.err_unknowncommand(command)
             return
         fn = getattr(Command, cmd)
-        if not (cmd_use_case.get(cmd, 2) & (2 if self.registered else 1)):
+        if not web.authorized:
+            code = 4
+        elif not self.registered:
+            code = 2
+        else:
+            code = 1
+
+        if not (cmd_use_case.get(cmd, 1) & code):
             self.err_unknowncommand(command)
             return
         try:
@@ -1694,7 +1569,7 @@ class Client:
                 body += buf
                 if len(body) >= size:
                     break
-            await web.send_file(self, peer, filename, body)
+            web.send_file(self, peer, filename, body)
 
         async def download_wrap():
             try:
@@ -1733,16 +1608,17 @@ class Client:
 
 
 class SpecialUser:
-    def __init__(self, client, record):
-        self.client = client
-        self.peer_id = record['peer_id']
+    def __init__(self, tg_user):
+        self.user_id = tg_user.id
+        self.peer = tl.types.PeerUser(tg_user.id)
         self.username = None
         self.channels = set()
         self.is_contact = False
         self.mode = ''
-        self.update(record)
+        self.update(tg_user)
         self.log_file = None
         self.last_text_by_client = weakref.WeakKeyDictionary()
+        self.max_id = 0
         self.privmsg_reply = None
         self.privmsg_seq = 0
         self.privmsg_text = ''
@@ -1752,12 +1628,8 @@ class SpecialUser:
             if k in ('flags', 'name', 'peer_id', 'print_name', 'username')})
 
     @property
-    def peer(self):
-        return 'user#{}'.format(self.peer_id)
-
-    @property
     def prefix(self):
-        return '{}!{}@{}'.format(self.nick, self.peer_id, im_name)
+        return '{}!{}@{}'.format(self.nick, self.user_id, im_name)
 
     def preferred_nick(self):
         if self.username:
@@ -1787,10 +1659,10 @@ class SpecialUser:
         if m in self.mode:
             self.mode = self.mode.replace(m, '')
 
-    def update(self, record):
-        self.username = record.get('username')
-        self.flags = record['flags']
-        self.print_name = record['print_name']
+    def update(self, tg_user):
+        self.tg_user = tg_user
+        self.username = tg_user.username
+        self.print_name = (tg_user.first_name or '') + '_' + (tg_user.last_name or '')
         old_nick = getattr(self, 'nick', None)
         base = irc_escape_nick(self.preferred_nick()) or 'Guest'
         suffix = ''
@@ -1805,7 +1677,7 @@ class SpecialUser:
             for channel in self.channels:
                 channel.nick_event(self, nick)
             self.nick = nick
-        if self.flags & TGLUF_CONTACT and not (self.flags & TGLUF_BLOCKED):
+        if tg_user.contact and not tg_user.restricted:
             if not self.is_contact:
                 self.is_contact = True
                 StatusChannel.instance.on_join(self)
@@ -1833,16 +1705,16 @@ class SpecialUser:
         if 'a' in self.mode:
             client.write(':{} AWAY away'.format(self.prefix))
         if options.mark_read == 'reply':
-            server.loop.create_task(web.mark_read(self))
+            web.mark_read(self.peer, self.max_id)
 
     def on_who_member(self, client, channel):
         client.reply('352 {} {} {} {} {} {} H :0 {}', client.nick, channel.name,
-                     self.peer_id, im_name, server.name,
+                     self.user_id, im_name, server.name,
                      self.nick, self.print_name)
 
     def on_whois(self, client):
         client.reply('311 {} {} {} {} * :{}', client.nick, self.nick,
-                     self.peer_id, im_name, self.print_name)
+                     self.user_id, im_name, self.print_name)
         if 'a' in self.mode:
             client.reply('301 {} {} away', client.nick, self.nick)
 
@@ -1866,10 +1738,11 @@ class Server:
         self.services = ('ChanServ',)
 
         self.last_text_by_client = weakref.WeakKeyDictionary()
-        self.peer_id = 0
+        self.max_id = 0
+        self.user_id = 0
         self.name2special_room = {}    # name -> Telegram chatroom
         self.peer_id2special_room = {} # peer_id -> SpecialChannel
-        self.peer_id2special_user = {} # peer_id -> SpecialUser
+        self.user_id2special_user = {} # peer_id -> SpecialUser
         self.nick2special_user = {}    # nick -> IRC user or Telegram user (friend or room contact)
 
     def _accept(self, reader, writer):
@@ -1941,39 +1814,36 @@ class Server:
         self.channels[irc_lower(channelname)] = channel
         return channel
 
-    def ensure_special_room(self, record):
-        debug('ensure_special_room %r', record)
-        assert isinstance(record['peer_id'], int)
-        assert isinstance(record['flags'], int)
-        assert isinstance(record['title'], str)
-        if record['peer_id'] in self.peer_id2special_room:
-            room = self.peer_id2special_room[record['peer_id']]
+    def ensure_special_room(self, peer_id, tg_room):
+        debug('ensure_special_room %r %r', peer_id, tg_room)
+        if peer_id in self.peer_id2special_room:
+            room = self.peer_id2special_room[peer_id]
             del self.name2special_room[irc_lower(room.name)]
-            room.update(record)
+            #room.update(record)
         else:
-            room = SpecialChannel(record)
-            self.peer_id2special_room[room.peer_id] = room
+            if tg_room is None:
+                tg_room = web.proc.get_entity(peer_id)
+            room = SpecialChannel(tg_room)
+            self.peer_id2special_room[peer_id] = room
             if options.join == 'all':
                 for client in self.auth_clients():
                     client.auto_join(room)
         self.name2special_room[irc_lower(room.name)] = room
         return room
 
-    def ensure_special_user(self, record):
-        debug('ensure_special_user %r', record)
-        if record['flags'] & TGLUF_SELF:
+    def ensure_special_user(self, user_id, tg_user):
+        debug('ensure_special_user %r %r', user_id, tg_user)
+        if user_id == self.user_id:
             return self
-        assert isinstance(record['peer_id'], int)
-        assert isinstance(record.get('username', ''), str)
-        assert isinstance(record['print_name'], str)
-        assert isinstance(record['flags'], int)
-        if record['peer_id'] in self.peer_id2special_user:
-            user = self.peer_id2special_user[record['peer_id']]
+        if user_id in self.user_id2special_user:
+            user = self.user_id2special_user[user_id]
             self.remove_special_user(user.nick)
-            user.update(record)
+            #user.update(tg_user)
         else:
-            user = SpecialUser(self, record)
-            self.peer_id2special_user[user.peer_id] = user
+            if tg_user is None:
+                tg_user = web.proc.get_entity(user_id)
+            user = SpecialUser(tg_user)
+            self.user_id2special_user[user.user_id] = user
         self.nick2special_user[irc_lower(user.nick)] = user
         return user
 
@@ -2009,16 +1879,152 @@ class Server:
             i.close()
             self.loop.run_until_complete(i.wait_closed())
 
-    def on_telegram_cli(self, data):
-        if isinstance(data, list):
-            for x in data:
-                name = (x.get('event') or x.get('peer_type')).replace('-', '_')
-                if type(SpecialCommands.__dict__.get(name)) == staticmethod:
-                    getattr(SpecialCommands, name)(x)
+    def on_telegram_update(self, update):
+        debug('on_telegram_update %r %r', update, update.to_dict())
+        #if update.id in web.id2message:
+        #    return
+        if isinstance(update, tl.types.ChannelParticipantsKicked):
+            # TODO
+            pass
+        elif isinstance(update, tl.types.UpdateNewChannelMessage):
+            msg = update.message
+            sender = server.ensure_special_user(msg.from_id, None)
+            to = server.ensure_special_room(msg.to_id.channel_id, None)
+        elif isinstance(update, tl.types.UpdateNewMessage):
+            msg = update.message
+            sender = server.ensure_special_user(msg.from_id, None)
+            if isinstance(msg.to_id, tl.types.PeerUser):
+                to = server.ensure_special_user(msg.to_id.user_id, None)
+            elif isinstance(msg.to_id, tl.types.PeerChannel):
+                to = server.ensure_special_room(msg.to_id.channel_id, None)
+            elif isinstance(msg.to_id, tl.types.PeerChat):
+                to = server.ensure_special_room(msg.to_id.chat_id, None)
+        elif isinstance(update, tl.types.UpdateShortChatMessage):
+            msg = update
+            sender = server.ensure_special_user(update.from_id, None)
+            to = server.ensure_special_room(update.chat_id, None)
+        elif isinstance(update, tl.types.UpdateShortMessage):
+            msg = update
+            sender = server.ensure_special_user(update.user_id, None)
+            to = server
+        elif isinstance(update, tl.types.UpdateUserStatus):
+            try:
+                user = server.ensure_special_user(update.user_id, None)
+            except:
+                return
+            if user is not server:
+                if isinstance(update.status, tl.types.UserStatusOffline):
+                    user.set_umode('a')
+                    user.event('AWAY', 'offline')
+                elif isinstance(update.status, tl.types.UserStatusOnline):
+                    user.unset_umode('a')
+                    user.event('AWAY')
+            return
         else:
-            name = (data.get('event') or data.get('peer_type')).replace('-', '_')
-            if type(SpecialCommands.__dict__.get(name)) == staticmethod:
-                getattr(SpecialCommands, name)(data)
+            return
+        if options.ignore_bot and (
+                isinstance(to, SpecialUser) and to.bot or
+                isinstance(sender, SpecialUser) and sender.bot):
+            return
+
+        sender.max_id = msg.id
+        record = {'id': msg.id, 'from': sender, 'to': to, 'message': msg.message}
+        web.append_history(record)
+        # UpdateShort{,Chat}Message do not have update.media
+        # UpdateNewChannelMessage may have {media: None}
+        if getattr(msg, 'media', None):
+            text = None
+            if isinstance(msg.media, tl.types.MessageMediaContact):
+                type = 'contact'
+            elif isinstance(msg.media, tl.types.MessageMediaDocument):
+                type = 'document'
+            elif isinstance(msg.media, tl.types.MessageMediaEmpty):
+                type = 'empty'
+            elif isinstance(msg.media, tl.types.MessageMediaGeo):
+                type = 'geo'
+                text = '[{}] latitude:{} longitude:{}'.format(type, msg.media.geo.long, msg.media.geo.lat)
+            elif isinstance(msg.media, tl.types.MessageMediaPhoto):
+                type = 'photo'
+            elif isinstance(msg.media, tl.types.MessageMediaWebPage):
+                type = 'webpage'
+                if isinstance(msg.media, tl.types.WebPage):
+                    text = '[{}] {}'.format(type, msg.media.webpage.url)
+            else:
+                type = 'unknown'
+            if type in ('document', 'photo'):
+                media_id = str(len(web.id2media))
+                text = '[{}] {}/document/{}{}'.format(type, options.http_url, media_id, {'photo': '.jpg'}.get(type, ''))
+                if type == 'photo' and isinstance(msg.media.photo, tl.types.Photo):
+                    for size in msg.media.photo.sizes:
+                        if isinstance(size, tl.types.PhotoCachedSize):
+                            text += ' {}x{}'.format(size.w, size.h)
+                        elif isinstance(size, tl.types.PhotoSize):
+                            text += ' {}x{},{}B'.format(size.w, size.h, size.size)
+                    web.id2media[media_id] = (msg.media, None)
+            elif text is None:
+                text = '[{}] {}'.format(type, msg.media.to_dict())
+        else:
+            text = msg.message
+        for line in text.splitlines():
+            if msg.reply_to_msg_id is not None:
+                if msg.reply_to_msg_id in web.id2message:
+                    refer = web.id2message[msg.reply_to_msg_id]
+                else:
+                    message = web.message_get(msg.reply_to_msg_id)
+                    refer = {'id': message.id,
+                             'from': server.ensure_special_user(message.from_id, None),
+                             'message': message.message}
+                    if isinstance(message.to_id, tl.types.PeerUser):
+                        refer['to'] = server.ensure_special_user(message.to_id.user_id, None)
+                    elif isinstance(message.to_id, tl.types.PeerChannel):
+                        refer['to'] = server.ensure_special_room(message.to_id.channel_id, None)
+                    elif isinstance(message.to_id, tl.types.PeerChat):
+                        refer['to'] = server.ensure_special_room(message.to_id.chat_id, None)
+                    web.append_history(refer)
+                refer_text = refer['message'].replace('\n', '\\n')
+                if len(refer_text) > 8:
+                    refer_text = refer_text[:8]+'...'
+                user = refer['from']
+                for client in server.auth_clients():
+                    line = '\x0315「Re {}: {}」\x0f{}'.format(
+                        client.nick if user == server else user.nick, refer_text, line)
+                    break
+
+            client = server.preferred_client()
+            if client:
+                where = sender if to == server else to
+                irc_log(where, client if where == server else where, msg.date,
+                        client if sender == server else sender, line)
+
+            if isinstance(to, SpecialChannel):
+                for c in server.auth_clients():
+                    if c not in to.joined and 'm' not in to.mode:
+                        if options.join in ('all', 'auto') and c not in to.explicit_parted or options.join == 'new':
+                            c.auto_join(to)
+            for client in server.auth_clients():
+                #if isinstance(to, Channel) and client not in to.joined or (
+                #        'echo-message' not in client.capabilities and
+                #        sender == server and 'media' not in data and
+                #        data['text'] == to.last_text_by_client.get(client)):
+                #    continue
+                sender_prefix = client.prefix if sender == server else sender.prefix
+                to_nick = client.nick if to == server else to.nick
+                line = ':{} PRIVMSG {} :{}'.format(sender_prefix, to_nick, line)
+                tags = []
+                if 'draft/message-tags' in client.capabilities:
+                    tags.append('draft/msgid={}'.format(msg.id))
+                if 'server-time' in client.capabilities:
+                    tags.append('time={}Z'.format(datetime.utcfromtimestamp(msg.date.timestamp())
+                                                  .strftime('%FT%T.%f')[:23]))
+                if tags:
+                    line = '@{} {}'.format(';'.join(tags), line)
+                client.write(line)
+        if options.mark_read == 'always' and isinstance(sender, SpecialUser):
+            if to is server:
+                if sender is not server:
+                    web.mark_read(sender.peer, msg.id)
+            else:
+                web.mark_read(to.peer, msg.id)
 
     def on_disconnect(self, peername):
         # PART all special channels, these chatrooms will be garbage collected
@@ -2029,7 +2035,7 @@ class Server:
 
         # instead of flooding +telegram with massive PART messages,
         # take the shortcut by rejoining the client
-        self.peer_id2special_user.clear()
+        self.user_id2special_user.clear()
         status = StatusChannel.instance
         clients = [x for x in status.members if isinstance(x, Client)]
         status.members.clear()
@@ -2077,22 +2083,19 @@ def main():
     ap.add_argument('-q', '--quiet', action='store_const', const=logging.WARN, dest='loglevel')
     ap.add_argument('--sasl-password', default='', help='Set the SASL password')
     ap.add_argument('--special-channel-prefix', choices=('&', '!', '#', '##'), default='&', help='prefix for SpecialChannel')
-    ap.add_argument('--telegram-cli-command', default='telegram-cli',
-                    help='telegram-cli command name. default: telegram-cli')
-    ap.add_argument('--telegram-cli-port', type=int, default=1235,
-                    help='telegram-cli listen port. default: 1235')
-    ap.add_argument('--telegram-cli-timeout', type=float, default=10,
-                    help='telegram-cli request (like load_photo) timeout in seconds. default: 10')
-    ap.add_argument('--telegram-cli-poll-channels', type=int, nargs='*',
-                    help='telegram-cli cannot receive messages in some channels https://github.com/vysheng/tg/issues/1135 , specify their `peer_id` to poll messages with the `history` command')
-    ap.add_argument('--telegram-cli-poll-limit', type=int, default=10,
-                    help='history channel#{peer_id} {telegram_cli_poll_limit}')
-    ap.add_argument('--telegram-cli-poll-interval', type=int, default=10,
-                    help='interval in seconds, default: 10')
+    ap.add_argument('--tg-api-id', type=int, help='App api_id on https://my.telegram.org/apps')
+    ap.add_argument('--tg-api-hash', help='App api_hash on https://my.telegram.org/apps')
+    ap.add_argument('--tg-media-dir', default='/tmp/telegramircd', help='directory of media files')
+    ap.add_argument('--tg-session', default='telegramircd', help='Telethon session name')
+    ap.add_argument('--tg-session-dir', default='.', help='directory of Telethon session file')
+    ap.add_argument('--tg-phone', type=int, help='phone number')
     ap.add_argument('-v', '--verbose', action='store_const', const=logging.DEBUG, dest='loglevel')
     global options
     options = ap.parse_args()
     options.irc_nicks = [irc_lower(x) for x in options.irc_nicks]
+
+    os.chdir(options.tg_session_dir)
+    os.makedirs(options.tg_media_dir, exist_ok=True)
 
     if sys.platform == 'linux':
         # send to syslog if run as a daemon (no controlling terminal)
@@ -2125,9 +2128,10 @@ def main():
     server = Server()
     web = Web(http_tls)
 
+    # FIXME
     def exception_handler(loop, context):
         server.loop.create_task(web.restart_telegram_cli())
-    loop.set_exception_handler(exception_handler)
+    #loop.set_exception_handler(exception_handler)
 
     server.start(loop, irc_tls)
     web.start(options.http_listen if options.http_listen else options.listen,
