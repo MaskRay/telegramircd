@@ -12,24 +12,29 @@ telegramircd uses [Telethon](https://github.com/LonamiWebs/Telethon) to communic
 - python >= 3.5
 - `pip3 install -r requirements.txt`
 
+Create a Telegram App.
+
 - Visit <https://my.telegram.org/apps>, create an App, and get `app_id, app_hash`.
-- Create a Telethon client. Read <https://github.com/LonamiWebs/Telethon>, execute `TelegramClient('telegramircd', api_id, api_hash)`, login, and get a session file `telegramircd.session` in current working directory.
-- Update `config`: change `tg-api-id, tg-api-hash` to `app_id, app_hash`; change `tg-session-dir` to the directory containing `telegramircd.session`
+- Update `config`: change `tg-api-id, tg-api-hash, tg-phone`; change `tg-session-dir` to the directory where you want to store `telegramircd.session` (defaults to `.` for current working directory, it will be created after the initial login)
 - `./telegramircd.py -c config`
 
 ### Arch Linux
 
-The `git` and `pip3 install -r requirements.txt` steps can be replaced with:
+The `git clone` and `pip3 install -r requirements.txt` steps can be replaced with:
 
 - Install `aur/telegramircd-git`
 - `pip install --user telethon`
-- Create `/etc/systemd/system/telegramircd.service` from the template `/lib/systemd/system/telegramircd.service`. Change the `User=` and `Group=` fields, otherwise `telethon` installed by `pip` cannot be accessed.
+- The server is installed at `/usr/bin/telegramircd`.
 
-Run `systemctl start telegramircd`.
+A systemd service template is install at `/lib/systemd/system/telegramircd.service`. You may create `/etc/systemd/system/telegramircd.service` from the template. Change the `User=` and `Group=` fields to whom `telethon` is installed with. Run `systemctl start telegramircd`.
 
 ## Running telegramircd
 
-`telegramircd.py` (the server) will listen on 127.0.0.1:6669 (IRC) and 127.0.0.1:9003 (HTTPS + WebSocket over TLS).
+`telegramircd.py` (the server) will listen on 127.0.0.1:6669 (IRC, `irc-listen, irc-port`) and 127.0.0.1:9003 (HTTPS + WebSocket over TLS, `http-url`).
+
+Connect to the IRC server with you favorite IRC client. You will join the channel `+telegram` automatically. For the first login, you need to type `/oper a $login_code` where `$login_code` is sent to your phone as a short message. If two-step verification is enabled, you will need to type `/oper a $password`. A file named `$tg_session.session` is saved in `$tg_session_dir`, and login code is not required for future logins.
+
+Session files can also be created by executing `TelegramClient(session_name, api_id, api_hash)` (see <https://github.com/LonamiWebs/Telethon>).
 
 If you run the server on another machine, it is recommended to set up IRC over TLS and an IRC connection password with a few more options: `--irc-cert /path/to/irc.key --irc-key /path/to/irc.cert --irc-password yourpassword`. As an alternative to the IRC connection password, you may specify `--sasl-password yourpassword` and authenticate with SASL PLAIN. You can reuse the HTTPS certificate+key. If you use WeeChat and find it difficult to set up a valid certificate (gnutls checks the hostname), type the following lines in WeeChat:
 ```
@@ -159,15 +164,14 @@ Supported IRC commands:
 - `--paste-wait`, PRIVMSG lines will be hold for up to `$paste_wait` seconds, lines in this interval will be packed to a multiline message
 - `--sasl-password pass`, set the SASL password to `pass`.
 - `--special-channel-prefix`, choices: `&`, `!`, `#`, `##`, prefix for SpecialChannel. [Quassel](quassel-irc.org) does not seem to support channels with prefixes `&`, `--special-channel-prefix '##'` to make Quassel happy
-- telegram-cli related options
-  + `--telegram-cli-command telegram-cli`, telegram-cli command name.
-  + `--telegram-cli-port 1235`, telegram-cli listen port.
-  + `--telegram-cli-timeout 10`, telegram-cli request (like `load_photo`) timeout in seconds
-  + `--telegram-cli-poll-channels 1031857103`, telegram-cli cannot receive messages in some channels <https://github.com/vysheng/tg/issues/1135>, specify their `peer_id` to poll messages with the `history` command
-  + `--telegram-cli-poll-interval 10`, interval in seconds
-  + `--telegram-cli-poll-limit 10`, `history channel#{peer_id} {telegram_cli_poll_limit}`
+- Telegram related options
+  + `--tg-phone`, phone number
+  + `--tg-api-id`
+  + `--tg-api-hash`
+  + `--tg-session telegramircd`, session filename.
+  + `--tg-session-dir .`, where to save session file
 
-See [telegramircd.service](telegramircd.service) for a template of `/etc/systemd/system/telegramircd.service`. Change `User=` and `Group=`. Change the `User=` and `Group=` fields.
+See [telegramircd.service](example_services/telegramircd.service) for a template of `/etc/systemd/system/telegramircd.service`. Change `User=` and `Group=`. Change the `User=` and `Group=` fields.
 
 ## Demo
 
@@ -175,14 +179,6 @@ See [telegramircd.service](telegramircd.service) for a template of `/etc/systemd
 
 ## Known issues
 
-- telegram-cli cannot receive messages (most messages if not all, `tgl/mtproto-client.c:rpc_execute`) from some channels <https://github.com/vysheng/tg/issues/1135>.
-  Use `/list` to get their `peer_id`:
-
-  ```
-  &test0(0): channel#1000000000 test0
-  &test1(0): channel#1000000001 test1
-  End of LIST
-  ```
-
-  Specify `--telegram-cli-poll-channels 1000000000 1000000001` to make telegramircd poll messages with the `history channel#{channel_id} 10` command.
-- Blocked users do not have the `TGLUF_BLOCKED` flag (<https://github.com/vysheng/tgl/blob/master/tgl-layout.h>) before doing `user_info`
+- No participants in chat.
+- Messages from the user is not logged. I do not know how to receive a copy of messages the user send.
+- Sometimes `struct.error: required argument is not an integer` when calling `self.channel_get_participants(channel)`

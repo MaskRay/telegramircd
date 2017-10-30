@@ -573,6 +573,7 @@ class Command:
                 if server.has_channel(channelname):
                     channels.append(server.get_channel(channelname))
         else:
+            web.init()
             channels = set(server.channels.values())
             channels.update(server.name2special_room.values())
             channels = list(channels)
@@ -643,6 +644,7 @@ class Command:
     @registered(7)
     def oper(client, _, password):
         ok = False
+        StatusChannel.instance.respond(client, 'Signing in...')
         if web.two_step:
             web.two_step = False
             ok = web.proc.sign_in(password=password)
@@ -2071,7 +2073,7 @@ def main():
     ap.add_argument('--irc-password', default='', help='Set the IRC connection password')
     ap.add_argument('--irc-port', type=int, default=6669,
                     help='IRC server listen port. default: 6669')
-    ap.add_argument('-j', '--join', choices=['all', 'auto', 'manual', 'new'], default='auto',
+    ap.add_argument('-j', '--join', choices=['all', 'auto', 'manual', 'new'], default='new',
                     help='join mode for '+im_name+' chatrooms. all: join all after connected; auto: join after the first message arrives; manual: no automatic join; new: join whenever messages arrive (even if after /part); default: auto')
     ap.add_argument('-l', '--listen', nargs='*', default=['127.0.0.1'],
                     help='IRC/HTTP listen addresses, default: 127.0.0.1')

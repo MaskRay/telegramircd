@@ -1,9 +1,15 @@
 # See https://pypi.python.org/pypi/ConfigArgParse for syntax
 
+# Phone number. No leading +
+tg-phone: 10123456789
+# App api_id from https://my.telegram.org/apps
 tg-api-id: 00000
+# App api_hash. No single quotation marks
 tg-api-hash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-#tg-session: telegramircd
-#tg-session-dir: .
+# Session name (account credential, login code is not needed for future logins)
+tg-session: telegramircd
+# Where to store $tg_session.session . Make sure this directory is writable (especially when you use a systemd service)
+tg-session-dir: .
 
 # HTTP/WebSocket related options
 # Use HTTPS to server links if at least one of http-cert or http-key is specified
@@ -31,7 +37,7 @@ irc-listen: [127.0.0.1, ::1]
 irc-port: 6669
 
 # join mode
-join: new
+#join: new
 
 # logger
 #logger-ignore:
@@ -43,14 +49,3 @@ join: new
 
 # SASL PLAIN password (as an alternative to --irc-password)
 #sasl-password:
-
-# telegram-cli
-#telegram-cli-command: telegram-cli
-#telegram-cli-port: 1235
-#telegram-cli-timeout: 10
-# telegram-cli cannot receive messages in some channels https://github.com/vysheng/tg/issues/1135 , specify their `peer_id` to poll messages with the `history` command
-#telegram-cli-poll-channels: [123, 456]
-# history channel#{peer_id} {telegram_cli_poll_limit}
-#telegram-cli-poll-limit: 10
-# interval in seconds, default: 10
-#telegram-cli-poll-interval: 10

@@ -2,14 +2,35 @@
 
 telegramircd类似于bitlbee，可以用IRC客户端收发Telegram消息。
 
+telegramircd使用[Telethon](https://github.com/LonamiWebs/Telethon)和Telegram服务器通信。
+
+## 安装
+
+- `git clone -b telethon https://github.com/MaskRay/telegramircd && cd telegramircd`
+- python >= 3.5
+- `pip3 install -r requirements.txt`
+
+创建一个Telegram App。
+
+- 访问<https://my.telegram.org/apps>，创建App，获取`app_id, app_hash`。
+- 更新`config`：修改`tg-api-id, tg-api-hash, tg-phone`，把`tg-session-dir`改成存储`telegramircd.session`的目录（默认为当前目录，session文件首次登录时创建）
+- `./telegramircd.py -c config`
+
 ### Arch Linux
 
-- `aur/telegramircd-git`
-- `aur/telegram-cli-git`。telegramircd使用telegram-cli和Telegram服务器通信。运行`telegram-cli`以获取登录凭据
-- 根据模板`/lib/systemd/system/telegramircd.service`创建`/etc/systemd/system/telegramircd.service`。修改`User=`和`Group=`，否则`telegram-cli`无法加载登录凭据
-- `systemctl start telegramircd`
+`git clone`和`pip3 install -r requirements.txt`两步可以换成如下命令：
 
-IRC服务器默认监听127.0.0.1:6669 (IRC)和127.0.0.1:9000 (HTTPS + WebSocket over TLS)。
+- 安装`aur/telegramircd-git`
+- `pip install --user telethon`
+- 服务器可执行文件为`/usr/bin/telegramircd`
+
+systemd service模板安装在`/lib/systemd/system/telegramircd.service`，可以据此创建`/etc/systemd/system/telegramircd.service`。注意修改`User=` `Group=`为安装`telethon`包的用户。运行`systemctl start telegramircd`。
+
+## 运行telegramircd
+
+`telegramircd.py`默认监听127.0.0.1:6669 (IRC, `irc-listen, irc-port`)和127.0.0.1:9000 (HTTPS + WebSocket over TLS, `http-url`)。
+
+用IRC客户端连接，会自动加入`+telegram`频道。首次登录需要输入`/oper a $login_code`，其中`$login_code`会以短信息形式发送到手机。如果启用了两步认证，需要输入`/oper a $password`。登录后，`$tg_session.session`会保存在`$tg_session_dir`，以后登录就不需要login code了。
 
 如果你在非本机运行，建议配置IRC over TLS，设置IRC connection password，添加这些选项：`--irc-cert /path/to/irc.key --irc-key /path/to/irc.cert --irc-password yourpassword`。
 
@@ -19,12 +40,6 @@ IRC服务器默认监听127.0.0.1:6669 (IRC)和127.0.0.1:9000 (HTTPS + WebSocket
 /set irc.server.telegram.ssl_verify off
 /set irc.server.telegram.password yourpassword
 ```
-
-### 其他发行版
-
-- python >= 3.5
-- `pip install -r requirements.txt`
-- `./telegramircd.py`
 
 ### 用HTTPS伺服文件链接
 
@@ -142,29 +157,17 @@ WeeChat配置如下：
 - `--mark-read`, 自动`mark_read`私聊消息
 - `--paste-wait`，待发送消息延迟0.1秒发送，期间收到的所有行合并为一个多行消息发送
 - `--special-channel-prefix`，选项：`&`, `!`, `#`, `##`，SpecialChannel的前缀。[Quassel](quassel-irc.org)似乎不支持channel前缀`&`，指定`--special-channel-prefix '##'`让Quassel高兴
-- telegram-cli相关选项
-  + `--telegram-cli-command telegram-cli`, telegram-cli command name.
-  + `--telegram-cli-port 1235`, telegram-cli listen port.
-  + `--telegram-cli-timeout 10`, telegram-cli request (like `load_photo`) timeout in seconds
-  + `--telegram-cli-poll-channels 1031857103`, telegram-cli cannot receive messages in some channels <https://github.com/vysheng/tg/issues/1135>, specify their `peer_id` to poll messages with the `history` command
-  + `--telegram-cli-poll-interval 10`, interval in seconds
-  + `--telegram-cli-poll-limit 10`, `history channel#{peer_id} {telegram_cli_poll_limit}`
+- Telegram相关选项
+  + `--tg-phone`, phone number
+  + `--tg-api-id`
+  + `--tg-api-hash`
+  + `--tg-session telegramircd`，session文件名
+  + `--tg-session-dir .`，保存session文件的目录
 
-[telegramircd.service](telegramircd.service)是`/etc/systemd/system/telegramircd.service`的模板，修改其中的`User=` and `Group=`。
+[telegramircd.service](example_services/telegramircd.service)是`/etc/systemd/system/telegramircd.service`的模板，修改其中的`User=` and `Group=`。
 
 ## Demo
 
 ![](https://maskray.me/static/2016-05-07-telegramircd/telegramircd.jpg)
 
 ## 已知问题
-
-- 对于某些channel，telegram-cli无法接收消息<https://github.com/vysheng/tg/issues/1135>
-  用`/list`命令获取这些channel的`peer_id`:
-
-  ```
-  &test0(0): channel#1000000000 test0
-  &test1(0): channel#1000000001 test1
-  End of LIST
-  ```
-
-  指定`--telegram-cli-poll-channels 1000000000 1000000001`让telegramircd定期执行`history channel#{channel_id} 10`命令poll消息。
