@@ -1890,6 +1890,25 @@ class Server:
         if isinstance(update, tl.types.ChannelParticipantsKicked):
             # TODO
             pass
+        elif isinstance(update, tl.types.UpdateChatParticipantAdd):
+            user = server.ensure_special_user(update.user_id, None)
+            if user is not server:
+                room = server.ensure_special_room(update.chat_id, None)
+                room.on_join(user)
+                if user.is_contact:
+                    room.voice_event(user)
+                    room.set_cmode(user, 'v')
+            return
+        elif isinstance(update, tl.types.UpdateChatParticipantDelete):
+            room = server.ensure_special_room(update.chat_id, None)
+            user = server.ensure_special_user(update.user_id, None)
+            if user is server:
+                joined = [client for client in server.auth_clients() if client in channel.joined]
+                for client in joined:
+                    channel.on_part(client)
+            else:
+                room.on_part(user)
+            return
         elif isinstance(update, tl.types.UpdateNewChannelMessage):
             msg = update.message
             sender = server.ensure_special_user(msg.from_id, None)
