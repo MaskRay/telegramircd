@@ -179,6 +179,4 @@ See [telegramircd.service](example_services/telegramircd.service) for a template
 
 ## Known issues
 
-- No participants in chat.
-- Messages from the user is not logged. I do not know how to receive a copy of messages the user sends.
 - Sometimes `struct.error: required argument is not an integer` when calling `self.channel_get_participants(channel)`

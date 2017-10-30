@@ -224,10 +224,11 @@ class Web(object):
         except telethon.errors.rpc_base_errors.RPCError:
             pass
 
-    #async def channel_list(self):
-    #    for data in await self.send_command('channel_list'):
-    #        if not (data['flags'] & TGLCF_DEACTIVATED):
-    #            server.ensure_special_room(data)
+    def chat_get_full(self, channel):
+        chatfull = self.proc(tl.functions.messages.GetFullChatRequest(
+            channel.tg_room.id
+        ))
+        channel.update_members(chatfull.users)
 
     #async def chat_info(self, channel):
     #    data = await self.send_command('chat_info {}'.format(channel.peer))
@@ -256,11 +257,26 @@ class Web(object):
             server.ensure_special_user(tg_user.id, tg_user)
 
     def channel_list(self):
-        # TODO retrieve all Channel/Chat
-        _, entities = self.proc.get_dialogs(20)
-        for entity in entities:
-            if isinstance(entity, (tl.types.Channel, tl.types.Chat)):
-                server.ensure_special_room(entity.id, entity)
+        # https://github.com/LonamiWebs/Telethon/wiki/Retrieving-all-dialogs
+        last_date = None
+        chunk_size = 20
+        while True:
+            debug('channel_list %r', last_date)
+            r = self.proc(tl.functions.messages.GetDialogsRequest(
+                offset_date=last_date,
+                offset_id=0,
+                offset_peer=tl.types.InputPeerEmpty(),
+                limit=chunk_size
+            ))
+            for tg_user in r.users:
+                server.ensure_special_user(tg_user.id, tg_user)
+            # Channel & Chat & ChatForbidden & ...
+            for tg_room in r.chats:
+                if isinstance(tg_room, (tl.types.Channel, tl.types.Chat)):
+                    server.ensure_special_room(tg_room.id, tg_room)
+            if not r.messages: break
+            last_date = min(msg.date for msg in r.messages)
+            time.sleep(0.7)
 
     def message_get(self, id):
         messages = self.proc(tl.functions.messages.GetMessagesRequest([id])).messages
@@ -281,13 +297,12 @@ class Web(object):
     def mark_read(self, peer, max_id):
         self.proc.send_read_acknowledge(peer, max_id=max_id)
 
-    async def channel_members(self, channel):
+    def channel_members(self, channel):
         try:
             if channel.is_type(tl.types.PeerChannel):
                 self.channel_get_participants(channel)
             elif channel.is_type(tl.types.PeerChat):
-                # FIXME self.chat_info(channel)
-                pass
+                self.chat_get_full(channel)
         except Exception as ex:
             error('channel_members %r', channel)
             traceback.print_exc()
@@ -304,26 +319,16 @@ class Web(object):
                 client.err_cannotsendtochan(peer.nick, 'Cannot send the file')
             os.unlink(filename)
 
-    def msg(self, client, peer, text):
+    def msg(self, client, to, text, reply_to=None):
         try:
-            self.proc.send_message(peer, text)
+            msg = self.proc.send_message(to.peer, text, reply_to=reply_to)
+            irc_log(to, to, msg.date, client, msg.message)
         except telethon.errors.rpc_base_errors.RPCError:
             traceback.print_exc()
-            if isinstance(peer, SpecialChannel):
-                client.err_nosuchchannel(peer.name)
-            elif isinstance(peer, SpecialUser):
-                client.err_nosuchnick(peer.nick)
-
-    def reply(self, client, peer, msg_id, text):
-        try:
-            self.proc.send_message(peer, text, reply_to=msg_id)
-        except telethon.errors.rpc_base_errors.RPCError:
-            traceback.print_exc()
-            if isinstance(peer, SpecialChannel):
-                client.err_nosuchchannel(peer.name)
-            elif isinstance(peer, SpecialUser):
-                client.err_nosuchnick(peer.nick)
-
+            if isinstance(to.peer, SpecialChannel):
+                client.err_nosuchchannel(to.name)
+            elif isinstance(to.peer, SpecialUser):
+                client.err_nosuchnick(to.nick)
 
 ### IRC utilities
 
@@ -424,11 +429,7 @@ def irc_privmsg(client, command, to, text):
         return
 
     def send():
-        if to.privmsg_reply:
-            print('+++++', client, to.peer, reply, to.privmsg_text)
-            web.reply(client, to.peer, reply, to.privmsg_text)
-        else:
-            web.msg(client, to.peer, to.privmsg_text)
+        web.msg(client, to, to.privmsg_text, to.privmsg_reply)
         to.last_text_by_client[client] = to.privmsg_text
         to.privmsg_reply = None
         to.privmsg_text = ''
@@ -626,7 +627,7 @@ class Command:
             client.err_notonchannel(target)
             return
         channel = server.get_channel(target)
-        server.loop.create_task(web.channel_members(channel))
+        web.channel_members(channel)
         channel.on_names(client)
 
     @staticmethod
@@ -1093,6 +1094,7 @@ class SpecialChannel(Channel):
         elif isinstance(tg_room, tl.types.Chat):
             self.peer = tl.types.PeerChat(tg_room.id)
         else:
+            error(tg_room)
             assert False
         self.joined = {}      # `client` has not joined
         self.explicit_parted = set()
@@ -1260,7 +1262,7 @@ class SpecialChannel(Channel):
                 return False
             self.joined[member] = ''
             self.explicit_parted.discard(member)
-            server.loop.create_task(web.channel_members(self))
+            web.channel_members(self)
             super().on_join(member)
         else:
             if member in self.members:
@@ -1949,8 +1951,8 @@ class Server:
                 type = 'photo'
             elif isinstance(msg.media, tl.types.MessageMediaWebPage):
                 type = 'webpage'
-                if isinstance(msg.media, tl.types.WebPage):
-                    text = '[{}] {}'.format(type, msg.media.webpage.url)
+                if isinstance(msg.media, (tl.types.WebPage, tl.types.WebPageNotModified)):
+                    text = '[{}] {}'.format(type, msg.media.webpage.url.replace('\n', '\\n'))
             else:
                 type = 'unknown'
             if type in ('document', 'photo'):
@@ -1973,24 +1975,28 @@ class Server:
                     refer = web.id2message[msg.reply_to_msg_id]
                 else:
                     message = web.message_get(msg.reply_to_msg_id)
-                    refer = {'id': message.id,
-                             'from': server.ensure_special_user(message.from_id, None),
-                             'message': message.message}
-                    if isinstance(message.to_id, tl.types.PeerUser):
-                        refer['to'] = server.ensure_special_user(message.to_id.user_id, None)
-                    elif isinstance(message.to_id, tl.types.PeerChannel):
-                        refer['to'] = server.ensure_special_room(message.to_id.channel_id, None)
-                    elif isinstance(message.to_id, tl.types.PeerChat):
-                        refer['to'] = server.ensure_special_room(message.to_id.chat_id, None)
-                    web.append_history(refer)
-                refer_text = refer['message'].replace('\n', '\\n')
-                if len(refer_text) > 8:
-                    refer_text = refer_text[:8]+'...'
-                user = refer['from']
-                for client in server.auth_clients():
-                    line = '\x0315「Re {}: {}」\x0f{}'.format(
-                        client.nick if user == server else user.nick, refer_text, line)
-                    break
+                    if isinstance(message, tl.types.MessageEmpty):
+                        refer = None
+                    else:
+                        refer = {'id': message.id,
+                                 'from': server.ensure_special_user(message.from_id, None),
+                                 'message': message.message}
+                        if isinstance(message.to_id, tl.types.PeerUser):
+                            refer['to'] = server.ensure_special_user(message.to_id.user_id, None)
+                        elif isinstance(message.to_id, tl.types.PeerChannel):
+                            refer['to'] = server.ensure_special_room(message.to_id.channel_id, None)
+                        elif isinstance(message.to_id, tl.types.PeerChat):
+                            refer['to'] = server.ensure_special_room(message.to_id.chat_id, None)
+                        web.append_history(refer)
+                if refer is not None:
+                    refer_text = refer['message'].replace('\n', '\\n')
+                    if len(refer_text) > 8:
+                        refer_text = refer_text[:8]+'...'
+                    user = refer['from']
+                    for client in server.auth_clients():
+                        line = '\x0315「Re {}: {}」\x0f{}'.format(
+                            client.nick if user == server else user.nick, refer_text, line)
+                        break
 
             client = server.preferred_client()
             if client:
