@@ -1662,6 +1662,10 @@ class TelegramUpdate:
         server.on_telegram_update_message(update, update.message)
 
     @staticmethod
+    def UpdateReadHistoryOutbox(server, update):
+        pass
+
+    @staticmethod
     def UpdateShortChatMessage(server, update):
         from_ = server.ensure_special_user(update.from_id, None)
         to = server.ensure_special_room(update.chat_id, None)
