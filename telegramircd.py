@@ -315,7 +315,7 @@ class Web(object):
                     f.write(body)
                     f.flush()
                 self.proc.send_file(peer, f.name)
-            except TelegramCliFail as ex:
+            except telethon.errors.rpc_base_errors.RPCError:
                 client.err_cannotsendtochan(peer.nick, 'Cannot send the file')
             os.unlink(filename)
 
@@ -1611,6 +1611,89 @@ class Client:
                               client.channels.keys() & self.channels.keys()))
 
 
+class TelegramUpdate:
+    @staticmethod
+    def UpdateChannelPinnedMessage(server, update):
+        pass
+
+    @staticmethod
+    def UpdateChannelWebPage(server, update):
+        pass
+
+    @staticmethod
+    def UpdateChatParticipantAdd(server, update):
+        user = server.ensure_special_user(update.user_id, None)
+        if user is not server:
+            room = server.ensure_special_room(update.chat_id, None)
+            room.on_join(user)
+            if user.is_contact:
+                room.voice_event(user)
+                room.set_cmode(user, 'v')
+
+    @staticmethod
+    def UpdateChatParticipantDelete(server, update):
+        room = server.ensure_special_room(update.chat_id, None)
+        user = server.ensure_special_user(update.user_id, None)
+        if user is server:
+            joined = [client for client in server.auth_clients() if client in channel.joined]
+            for client in joined:
+                channel.on_part(client)
+        else:
+            room.on_part(user)
+
+    @staticmethod
+    def UpdateChatUserTyping(server, update):
+        pass
+
+    @staticmethod
+    def UpdateEditChannelMessage(server, update):
+        server.on_telegram_update_message(update, update.message)
+
+    @staticmethod
+    def UpdateEditMessage(server, update):
+        server.on_telegram_update_message(update, update.message)
+
+    @staticmethod
+    def UpdateNewChannelMessage(server, update):
+        server.on_telegram_update_message(update, update.message)
+
+    @staticmethod
+    def UpdateNewMessage(server, update):
+        server.on_telegram_update_message(update, update.message)
+
+    @staticmethod
+    def UpdateShortChatMessage(server, update):
+        from_ = server.ensure_special_user(update.from_id, None)
+        to = server.ensure_special_room(update.chat_id, None)
+        server.on_telegram_update_message(update, update, from_, to)
+
+    @staticmethod
+    def UpdateShortMessage(server, update):
+        from_ = server.ensure_special_user(update.user_id, None)
+        server.on_telegram_update_message(update, update, from_, server)
+
+    @staticmethod
+    def UpdateUserStatus(server, update):
+        try:
+            user = server.ensure_special_user(update.user_id, None)
+        except:
+            return
+        if user is not server:
+            if isinstance(update.status, tl.types.UserStatusOffline):
+                user.set_umode('a')
+                user.event('AWAY', 'offline')
+            elif isinstance(update.status, tl.types.UserStatusOnline):
+                user.unset_umode('a')
+                user.event('AWAY')
+
+    @staticmethod
+    def UpdateUserTyping(server, update):
+        pass
+
+    @staticmethod
+    def UpdateWebPage(server, update):
+        pass
+
 class SpecialUser:
     def __init__(self, tg_user):
         self.user_id = tg_user.id
@@ -1883,71 +1966,29 @@ class Server:
             i.close()
             self.loop.run_until_complete(i.wait_closed())
 
-    def on_telegram_update(self, update):
-        debug('on_telegram_update %r %r', update, update.to_dict())
-        #if update.id in web.id2message:
-        #    return
-        if isinstance(update, tl.types.ChannelParticipantsKicked):
-            # TODO
-            pass
-        elif isinstance(update, tl.types.UpdateChatParticipantAdd):
-            user = server.ensure_special_user(update.user_id, None)
-            if user is not server:
-                room = server.ensure_special_room(update.chat_id, None)
-                room.on_join(user)
-                if user.is_contact:
-                    room.voice_event(user)
-                    room.set_cmode(user, 'v')
-            return
-        elif isinstance(update, tl.types.UpdateChatParticipantDelete):
-            room = server.ensure_special_room(update.chat_id, None)
-            user = server.ensure_special_user(update.user_id, None)
-            if user is server:
-                joined = [client for client in server.auth_clients() if client in channel.joined]
-                for client in joined:
-                    channel.on_part(client)
-            else:
-                room.on_part(user)
-            return
-        elif isinstance(update, tl.types.UpdateNewChannelMessage):
-            msg = update.message
-            sender = server.ensure_special_user(msg.from_id, None)
+    def resolve_from_to(self, msg):
+        from_ = server.ensure_special_user(msg.from_id, None)
+        if isinstance(msg.to_id, tl.types.PeerUser):
+            to = server.ensure_special_user(msg.to_id.user_id, None)
+        elif isinstance(msg.to_id, tl.types.PeerChannel):
             to = server.ensure_special_room(msg.to_id.channel_id, None)
-        elif isinstance(update, tl.types.UpdateNewMessage):
-            msg = update.message
-            sender = server.ensure_special_user(msg.from_id, None)
-            if isinstance(msg.to_id, tl.types.PeerUser):
-                to = server.ensure_special_user(msg.to_id.user_id, None)
-            elif isinstance(msg.to_id, tl.types.PeerChannel):
-                to = server.ensure_special_room(msg.to_id.channel_id, None)
-            elif isinstance(msg.to_id, tl.types.PeerChat):
-                to = server.ensure_special_room(msg.to_id.chat_id, None)
-        elif isinstance(update, tl.types.UpdateShortChatMessage):
-            msg = update
-            sender = server.ensure_special_user(update.from_id, None)
-            to = server.ensure_special_room(update.chat_id, None)
-        elif isinstance(update, tl.types.UpdateShortMessage):
-            msg = update
-            sender = server.ensure_special_user(update.user_id, None)
-            to = server
-        elif isinstance(update, tl.types.UpdateUserStatus):
-            try:
-                user = server.ensure_special_user(update.user_id, None)
-            except:
-                return
-            if user is not server:
-                if isinstance(update.status, tl.types.UserStatusOffline):
-                    user.set_umode('a')
-                    user.event('AWAY', 'offline')
-                elif isinstance(update.status, tl.types.UserStatusOnline):
-                    user.unset_umode('a')
-                    user.event('AWAY')
-            return
+        elif isinstance(msg.to_id, tl.types.PeerChat):
+            to = server.ensure_special_room(msg.to_id.chat_id, None)
         else:
-            return
-        if options.ignore_bot and (
-                isinstance(to, SpecialUser) and to.bot or
-                isinstance(sender, SpecialUser) and sender.bot):
+            assert False
+        return from_, to
+
+    def on_telegram_update(self, update):
+        name = type(update).__name__
+        if type(TelegramUpdate.__dict__.get(name)) is staticmethod:
+            getattr(TelegramUpdate, name)(self, update)
+        else:
+            info('on_telegram_update %r %r', type(update).__name__, update.to_dict())
+
+    def on_telegram_update_message(self, update, msg, sender=None, to=None):
+        if sender is None:
+            sender, to = self.resolve_from_to(msg)
+        if options.ignore_bot and isinstance(sender, SpecialUser) and sender.bot:
             return
 
         sender.max_id = msg.id
@@ -1970,7 +2011,7 @@ class Server:
                 type = 'photo'
             elif isinstance(msg.media, tl.types.MessageMediaWebPage):
                 type = 'webpage'
-                if isinstance(msg.media, (tl.types.WebPage, tl.types.WebPageNotModified)):
+                if isinstance(msg.media, tl.types.WebPage):
                     text = '[{}] {}'.format(type, msg.media.webpage.url.replace('\n', '\\n'))
             else:
                 type = 'unknown'
@@ -1985,7 +2026,7 @@ class Server:
                             text += ' {}x{},{}B'.format(size.w, size.h, size.size)
                     web.id2media[media_id] = (msg.media, None)
             elif text is None:
-                text = '[{}] {}'.format(type, msg.media.to_dict())
+                text = '[{}] {}'.format(type(msg.media).__name__, msg.media.to_dict())
         else:
             text = msg.message
         for line in text.splitlines():
@@ -1997,15 +2038,8 @@ class Server:
                     if isinstance(message, tl.types.MessageEmpty):
                         refer = None
                     else:
-                        refer = {'id': message.id,
-                                 'from': server.ensure_special_user(message.from_id, None),
-                                 'message': message.message}
-                        if isinstance(message.to_id, tl.types.PeerUser):
-                            refer['to'] = server.ensure_special_user(message.to_id.user_id, None)
-                        elif isinstance(message.to_id, tl.types.PeerChannel):
-                            refer['to'] = server.ensure_special_room(message.to_id.channel_id, None)
-                        elif isinstance(message.to_id, tl.types.PeerChat):
-                            refer['to'] = server.ensure_special_room(message.to_id.chat_id, None)
+                        from1, to1 = self.resolve_from_to(message)
+                        refer = {'id': message.id, 'from': from1, 'to': to1, 'message': message.message}
                         web.append_history(refer)
                 if refer is not None:
                     refer_text = refer['message'].replace('\n', '\\n')
