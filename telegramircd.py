@@ -1646,6 +1646,14 @@ class TelegramUpdate:
         pass
 
     @staticmethod
+    def UpdateDeleteChannelMessages(server, update):
+        pass
+
+    @staticmethod
+    def UpdateDeleteMessages(server, update):
+        pass
+
+    @staticmethod
     def UpdateEditChannelMessage(server, update):
         server.on_telegram_update_message(update, update.message)
 
