@@ -1670,6 +1670,18 @@ class TelegramUpdate:
         server.on_telegram_update_message(update, update.message)
 
     @staticmethod
+    def UpdateReadChannelInbox(server, update):
+        pass
+
+    @staticmethod
+    def UpdateReadChannelOutbox(server, update):
+        pass
+
+    @staticmethod
+    def UpdateReadHistoryInbox(server, update):
+        pass
+
+    @staticmethod
     def UpdateReadHistoryOutbox(server, update):
         pass
 
