@@ -20,8 +20,7 @@ telegramircd使用[Telethon](https://github.com/LonamiWebs/Telethon)和Telegram�
 
 `git clone`和`pip3 install -r requirements.txt`两步可以换成如下命令：
 
-- 安装`aur/telegramircd-git`
-- `pip install --user telethon`
+- 安装`aur/telegramircd-git`（依賴`aur/python-telethon`。您也可以安裝`archlinuxcn/python-telethon`）
 - 服务器可执行文件为`/usr/bin/telegramircd`
 
 systemd service模板安装在`/lib/systemd/system/telegramircd.service`，可以据此创建`/etc/systemd/system/telegramircd.service`。注意修改`User=` `Group=`为安装`telethon`包的用户。运行`systemctl start telegramircd`。

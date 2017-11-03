@@ -22,8 +22,7 @@ Create a Telegram App.
 
 The `git clone` and `pip3 install -r requirements.txt` steps can be replaced with:
 
-- Install `aur/telegramircd-git`
-- `pip install --user telethon`
+- Install `aur/telegramircd-git` (which depends on `aur/python-telethon`. You may also use `archlinuxcn/python-telethon`).
 - The server is installed at `/usr/bin/telegramircd`.
 
 A systemd service template is install at `/lib/systemd/system/telegramircd.service`. You may create `/etc/systemd/system/telegramircd.service` from the template. Change the `User=` and `Group=` fields to whom `telethon` is installed with. Run `systemctl start telegramircd`.

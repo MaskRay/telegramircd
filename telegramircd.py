@@ -1694,7 +1694,10 @@ class TelegramUpdate:
     @staticmethod
     def UpdateShortMessage(server, update):
         from_ = server.ensure_special_user(update.user_id, None)
-        server.on_telegram_update_message(update, update, from_, server)
+        to = server
+        if update.out:
+            from_, to = to, from_
+        server.on_telegram_update_message(update, update, from_, to)
 
     @staticmethod
     def UpdateUserStatus(server, update):
