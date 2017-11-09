@@ -164,11 +164,12 @@ class Web(object):
         tg_users = []
         offset = 0
         while True:
-            participants = self.proc.invoke(tl.functions.channels.GetParticipantsRequest(
+            participants = self.proc(tl.functions.channels.GetParticipantsRequest(
                 channel.tg_room,
                 tl.types.ChannelParticipantsSearch(''),
                 offset,
                 100,
+                0,  # hash
             ))
             if not participants.users: break
             tg_users.extend(participants.users)
@@ -181,7 +182,7 @@ class Web(object):
                 # TODO
                 pass
             elif channel.is_type(tl.types.PeerChat):
-                self.proc.invoke(tl.functions.messages.AddChatUserRequest(
+                self.proc(tl.functions.messages.AddChatUserRequest(
                     channel.peer.chat_id,
                     self.proc.get_input_entity(user.user_id),
                     0,
@@ -215,7 +216,7 @@ class Web(object):
             if channel.is_type(tl.types.PeerChannel):
                 pass
             elif channel.is_type(tl.types.PeerChat):
-                self.proc.invoke(tl.functions.messages.DeleteChatUserRequest(
+                self.proc(tl.functions.messages.DeleteChatUserRequest(
                     channel.peer.chat_id,
                     self.proc.get_input_entity(user.user_id),
                 ))
@@ -229,27 +230,6 @@ class Web(object):
             channel.tg_room.id
         ))
         channel.update_members(chatfull.users)
-
-    #async def chat_info(self, channel):
-    #    data = await self.send_command('chat_info {}'.format(channel.peer))
-    #    channel.update_members(data['members'])
-    #from telethon.tl.functions.channels import GetParticipantsRequest
-    #from telethon.tl.types import ChannelParticipantsSearch
-    #from time import sleep
-    #
-    #offset = 0
-    #limit = 100
-    #all_participants = []
-    #
-    #while True:
-    #    participants = client.invoke(GetParticipantsRequest(
-    #        channel, ChannelParticipantsSearch(''), offset, limit
-    #    ))
-    #    if not participants.users:
-    #        break
-    #    all_participants.extend(participants.users)
-    #    offset += len(participants.users)
-    #    # sleep(1)  # This line seems to be optional, no guarantees!
 
     def contact_list(self):
         contacts = self.proc(tl.functions.contacts.GetContactsRequest(0))
@@ -1646,6 +1626,14 @@ class TelegramUpdate:
         pass
 
     @staticmethod
+    def UpdateContactLink(server, update):
+        pass
+
+    @staticmethod
+    def UpdateContactRegistered(server, update):
+        pass
+
+    @staticmethod
     def UpdateDeleteChannelMessages(server, update):
         pass
 
@@ -1698,6 +1686,10 @@ class TelegramUpdate:
         if update.out:
             from_, to = to, from_
         server.on_telegram_update_message(update, update, from_, to)
+
+    @staticmethod
+    def UpdateUserName(server, update):
+        pass
 
     @staticmethod
     def UpdateUserStatus(server, update):
