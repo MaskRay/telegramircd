@@ -1594,11 +1594,11 @@ class Client:
 class TelegramUpdate:
     @staticmethod
     def UpdateChannelPinnedMessage(server, update):
-        pass
+        info('UpdateChannelPinnedMessage %r', update.to_dict())
 
     @staticmethod
     def UpdateChannelWebPage(server, update):
-        pass
+        info('UpdateChannelWebpage %r', update.to_dict())
 
     @staticmethod
     def UpdateChatParticipantAdd(server, update):
@@ -1711,7 +1711,7 @@ class TelegramUpdate:
 
     @staticmethod
     def UpdateWebPage(server, update):
-        pass
+        info('UpdateWebpage %r', update.to_dict())
 
 class SpecialUser:
     def __init__(self, tg_user):
@@ -2015,26 +2015,30 @@ class Server:
         web.append_history(record)
         # UpdateShort{,Chat}Message do not have update.media
         # UpdateNewChannelMessage may have {media: None}
-        if getattr(msg, 'media', None):
+        if isinstance(msg, str):
+            print('+str', msg)
+            text = msg
+        elif getattr(msg, 'media', None):
             text = None
             if isinstance(msg.media, tl.types.MessageMediaContact):
-                type = 'contact'
+                typ = 'contact'
             elif isinstance(msg.media, tl.types.MessageMediaDocument):
-                type = 'document'
+                typ = 'document'
             elif isinstance(msg.media, tl.types.MessageMediaEmpty):
-                type = 'empty'
+                typ = 'empty'
             elif isinstance(msg.media, tl.types.MessageMediaGeo):
-                type = 'geo'
+                typ = 'geo'
                 text = '[{}] latitude:{} longitude:{}'.format(type, msg.media.geo.long, msg.media.geo.lat)
             elif isinstance(msg.media, tl.types.MessageMediaPhoto):
-                type = 'photo'
+                typ = 'photo'
             elif isinstance(msg.media, tl.types.MessageMediaWebPage):
-                type = 'webpage'
-                if isinstance(msg.media, tl.types.WebPage):
-                    text = '[{}] {}'.format(type, msg.media.webpage.url.replace('\n', '\\n'))
+                typ = 'webpage'
+                webpage = msg.media.webpage
+                if isinstance(webpage, tl.types.WebPage):
+                    text = '[{}] {} {}'.format(typ, webpage.url.replace('\n', '\\n'), webpage.title)
             else:
-                type = 'unknown'
-            if type in ('document', 'photo'):
+                typ = 'unknown'
+            if typ in ('document', 'photo'):
                 media_id = str(len(web.id2media))
                 text = '[{}] {}/document/{}{}'.format(type, options.http_url, media_id, {'photo': '.jpg'}.get(type, ''))
                 if type == 'photo' and isinstance(msg.media.photo, tl.types.Photo):
