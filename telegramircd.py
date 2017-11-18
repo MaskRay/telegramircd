@@ -258,6 +258,11 @@ class Web(object):
             last_date = min(msg.date for msg in r.messages)
             time.sleep(0.7)
 
+    def channel_message_get(self, channel, id):
+        messages = self.proc(tl.functions.channels.GetMessagesRequest(
+            self.proc.get_input_entity(channel.peer), [id])).messages
+        return messages[0] if messages else None
+
     def message_get(self, id):
         messages = self.proc(tl.functions.messages.GetMessagesRequest([id])).messages
         return messages[0] if messages else None
@@ -2010,15 +2015,16 @@ class Server:
         if options.ignore_bot and isinstance(sender, SpecialUser) and sender.bot:
             return
 
+        if isinstance(msg, tl.types.MessageService):
+            info('on_telegram_update_message %r', msg.to_dict())
+            return
+
         sender.max_id = msg.id
         record = {'id': msg.id, 'from': sender, 'to': to, 'message': msg.message}
         web.append_history(record)
         # UpdateShort{,Chat}Message do not have update.media
         # UpdateNewChannelMessage may have {media: None}
-        if isinstance(msg, str):
-            print('+str', msg)
-            text = msg
-        elif getattr(msg, 'media', None):
+        if getattr(msg, 'media', None):
             text = None
             if isinstance(msg.media, tl.types.MessageMediaContact):
                 typ = 'contact'
@@ -2028,7 +2034,7 @@ class Server:
                 typ = 'empty'
             elif isinstance(msg.media, tl.types.MessageMediaGeo):
                 typ = 'geo'
-                text = '[{}] latitude:{} longitude:{}'.format(type, msg.media.geo.long, msg.media.geo.lat)
+                text = '[{}] latitude:{} longitude:{}'.format(typ, msg.media.geo.long, msg.media.geo.lat)
             elif isinstance(msg.media, tl.types.MessageMediaPhoto):
                 typ = 'photo'
             elif isinstance(msg.media, tl.types.MessageMediaWebPage):
@@ -2040,7 +2046,7 @@ class Server:
                 typ = 'unknown'
             if typ in ('document', 'photo'):
                 media_id = str(len(web.id2media))
-                text = '[{}] {}/document/{}{}'.format(type, options.http_url, media_id, {'photo': '.jpg'}.get(type, ''))
+                text = '[{}] {}/document/{}{}'.format(typ, options.http_url, media_id, {'photo': '.jpg'}.get(type, ''))
                 if type == 'photo' and isinstance(msg.media.photo, tl.types.Photo):
                     for size in msg.media.photo.sizes:
                         if isinstance(size, tl.types.PhotoCachedSize):
@@ -2053,11 +2059,23 @@ class Server:
         else:
             text = msg.message
         for line in text.splitlines():
-            if msg.reply_to_msg_id is not None:
+            if msg.fwd_from is not None:
+                try:
+                    from1 = server.ensure_special_user(msg.fwd_from.from_id, None)
+                    for client in server.auth_clients():
+                        line = '\x0315「Fwd {}」\x0f{}'.format(
+                            client.nick if from1 == server else user.nick, line)
+                        break
+                except Exception as ex:
+                    error('resolve fwd_from %r', ex)
+            elif msg.reply_to_msg_id is not None:
                 if msg.reply_to_msg_id in web.id2message:
                     refer = web.id2message[msg.reply_to_msg_id]
                 else:
-                    message = web.message_get(msg.reply_to_msg_id)
+                    if isinstance(msg.to_id, tl.types.PeerChannel):
+                        message = web.channel_message_get(to, msg.reply_to_msg_id)
+                    else:
+                        message = web.message_get(msg.reply_to_msg_id)
                     if isinstance(message, tl.types.MessageEmpty):
                         refer = None
                     else:
