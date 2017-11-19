@@ -67,7 +67,7 @@ class Web(object):
         self.authorized = False
         self.two_step = False
 
-    async def handle_media(self, type, request):
+    async def handle_media(self, typ, request):
         id = re.sub(r'\..*', '', request.match_info.get('id'))
         if id not in self.id2media:
             return aiohttp.web.Response(status=404, text='Not Found')
@@ -143,7 +143,7 @@ class Web(object):
             i.close()
             self.loop.run_until_complete(i.wait_closed())
         self.loop.run_until_complete(self.app.shutdown())
-        self.loop.run_until_complete(self.handler.finish_connections(0))
+        self.loop.run_until_complete(self.handler.shutdown(3))
         self.loop.run_until_complete(self.app.cleanup())
         for _, filename in self.id2media.values():
             if filename:
@@ -2046,14 +2046,14 @@ class Server:
                 typ = 'unknown'
             if typ in ('document', 'photo'):
                 media_id = str(len(web.id2media))
-                text = '[{}] {}/document/{}{}'.format(typ, options.http_url, media_id, {'photo': '.jpg'}.get(type, ''))
+                text = '[{}] {}/document/{}{}'.format(typ, options.http_url, media_id, {'photo': '.jpg'}.get(typ, ''))
                 if type == 'photo' and isinstance(msg.media.photo, tl.types.Photo):
                     for size in msg.media.photo.sizes:
                         if isinstance(size, tl.types.PhotoCachedSize):
                             text += ' {}x{}'.format(size.w, size.h)
                         elif isinstance(size, tl.types.PhotoSize):
                             text += ' {}x{},{}B'.format(size.w, size.h, size.size)
-                    web.id2media[media_id] = (msg.media, None)
+                web.id2media[media_id] = (msg.media, None)
             elif text is None:
                 text = '[{}] {}'.format(type(msg.media).__name__, msg.media.to_dict())
         else:
