@@ -62,6 +62,7 @@ class Web(object):
         self.tls = tls
         self.id2media = {}
         self.id2message = {}
+        self.webpage_id2sender_to = {}
         self.recent_messages = deque()
         self.proc = None
         self.authorized = False
@@ -1716,7 +1717,17 @@ class TelegramUpdate:
 
     @staticmethod
     def UpdateWebPage(server, update):
-        info('UpdateWebpage %r', update.to_dict())
+        webpage = update.webpage
+        info('UpdateWebpage %r %r', type(webpage), webpage.to_dict())
+        if isinstance(webpage, tl.types.WebPage):
+            value = web.webpage_id2sender_to.pop(webpage.id, None)
+            if value is None:
+                return
+            sender, to = value
+            server.deliver_message(None, sender, to, datetime.utcnow(),
+                                   '[WebPage] {} {}'.format(webpage.url.replace('\n', '\\n'),
+                                                            (webpage.title or webpage.display_url).replace('\n', '\\n')))
+
 
 class SpecialUser:
     def __init__(self, tg_user):
@@ -2002,6 +2013,9 @@ class Server:
             assert False
         return from_, to
 
+    def is_type(self, _type):
+        return False
+
     def on_telegram_update(self, update):
         name = type(update).__name__
         if type(TelegramUpdate.__dict__.get(name)) is staticmethod:
@@ -2042,6 +2056,9 @@ class Server:
                 webpage = msg.media.webpage
                 if isinstance(webpage, tl.types.WebPage):
                     text = '[{}] {} {}'.format(typ, webpage.url.replace('\n', '\\n'), webpage.title)
+                elif isinstance(webpage, tl.types.WebPagePending):
+                    text = '[WebPagePending] {}'.format(webpage.id)
+                    web.webpage_id2sender_to[webpage.id] = (sender, to)
             else:
                 typ = 'unknown'
             if typ in ('document', 'photo'):
@@ -2058,24 +2075,28 @@ class Server:
                 text = '[{}] {}'.format(type(msg.media).__name__, msg.media.to_dict())
         else:
             text = msg.message
+
+        self.deliver_message(msg.id, sender, to, msg.date, text, fwd_from=msg.fwd_from, reply_to_msg_id=msg.reply_to_msg_id)
+
+    def deliver_message(self, msg_id, sender, to, date, text, fwd_from=None, reply_to_msg_id=None):
         for line in text.splitlines():
-            if msg.fwd_from is not None:
+            if fwd_from is not None:
                 try:
-                    from1 = server.ensure_special_user(msg.fwd_from.from_id, None)
+                    from1 = server.ensure_special_user(fwd_from.from_id, None)
                     for client in server.auth_clients():
                         line = '\x0315「Fwd {}」\x0f{}'.format(
-                            client.nick if from1 == server else user.nick, line)
+                            client.nick if from1 == server else from1.nick, line)
                         break
                 except Exception as ex:
                     error('resolve fwd_from %r', ex)
-            elif msg.reply_to_msg_id is not None:
-                if msg.reply_to_msg_id in web.id2message:
-                    refer = web.id2message[msg.reply_to_msg_id]
+            elif reply_to_msg_id is not None:
+                if reply_to_msg_id in web.id2message:
+                    refer = web.id2message[reply_to_msg_id]
                 else:
-                    if isinstance(msg.to_id, tl.types.PeerChannel):
-                        message = web.channel_message_get(to, msg.reply_to_msg_id)
+                    if to.is_type(tl.types.PeerChannel):
+                        message = web.channel_message_get(to, reply_to_msg_id)
                     else:
-                        message = web.message_get(msg.reply_to_msg_id)
+                        message = web.message_get(reply_to_msg_id)
                     if isinstance(message, tl.types.MessageEmpty):
                         refer = None
                     else:
@@ -2095,7 +2116,7 @@ class Server:
             client = server.preferred_client()
             if client:
                 where = sender if to == server else to
-                irc_log(where, client if where == server else where, msg.date,
+                irc_log(where, client if where == server else where, date,
                         client if sender == server else sender, line)
 
             if isinstance(to, SpecialChannel):
@@ -2113,20 +2134,21 @@ class Server:
                 to_nick = client.nick if to == server else to.nick
                 line = ':{} PRIVMSG {} :{}'.format(sender_prefix, to_nick, line)
                 tags = []
-                if 'draft/message-tags' in client.capabilities:
-                    tags.append('draft/msgid={}'.format(msg.id))
-                if 'server-time' in client.capabilities:
-                    tags.append('time={}Z'.format(datetime.utcfromtimestamp(msg.date.timestamp())
-                                                  .strftime('%FT%T.%f')[:23]))
-                if tags:
-                    line = '@{} {}'.format(';'.join(tags), line)
+                if msg_id is not None:
+                    if 'draft/message-tags' in client.capabilities:
+                        tags.append('draft/msgid={}'.format(msg_id))
+                    if 'server-time' in client.capabilities:
+                        tags.append('time={}Z'.format(datetime.utcfromtimestamp(date.timestamp())
+                                                    .strftime('%FT%T.%f')[:23]))
+                    if tags:
+                        line = '@{} {}'.format(';'.join(tags), line)
                 client.write(line)
-        if options.mark_read == 'always' and isinstance(sender, SpecialUser):
+        if msg_id is not None and options.mark_read == 'always' and isinstance(sender, SpecialUser):
             if to is server:
                 if sender is not server:
-                    web.mark_read(sender.peer, msg.id)
+                    web.mark_read(sender.peer, msg_id)
             else:
-                web.mark_read(to.peer, msg.id)
+                web.mark_read(to.peer, msg_id)
 
     def on_disconnect(self, peername):
         # PART all special channels, these chatrooms will be garbage collected
