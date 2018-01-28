@@ -354,6 +354,7 @@ def process_text(to, text):
     multiline = False
     while 1:
         cont = False
+        in_channel = isinstance(to, SpecialChannel)
         match = re.match(r'@(\d\d)(\d\d)(\d\d)? ', text)
         if match:
             cont = True
@@ -362,8 +363,10 @@ def process_text(to, text):
             if SS is not None:
                 SS = int(SS)
             for msg in reversed(web.recent_messages):
-                if msg['to'] is to:
-                    dt = datetime.fromtimestamp(msg['date'])
+                if (msg['to'] is to and msg['from'] is not server) if in_channel \
+                        else (msg['from'] is to and msg['to'] is server):
+                    # UTC -> local
+                    dt = datetime.fromtimestamp(msg['date'].timestamp())
                     if dt.hour == HH and dt.minute == MM and (SS is None or dt.second == SS):
                         reply = msg['id']
                         break
@@ -372,15 +375,15 @@ def process_text(to, text):
             cont = True
             text = text[match.end():]
             which = int(match.group(1))
-            in_channel = isinstance(to, SpecialChannel)
             if which > 0:
                 for msg in reversed(web.recent_messages):
-                    if (msg['to'] is to and msg['from'] is not server) if in_channel \
-                            else (msg['from'] is to and msg['to'] is server):
-                        which -= 1 if 'media' in msg else len(msg['message'].splitlines())
-                        if which <= 0:
-                            reply = msg['id']
-                            break
+                    if not msg['inferred']:
+                        if (msg['to'] is to and msg['from'] is not server) if in_channel \
+                                else (msg['from'] is to and msg['to'] is server):
+                            which -= 1 if 'media' in msg else len(msg['message'].splitlines())
+                            if which <= 0:
+                                reply = msg['id']
+                                break
         if text.startswith('!m '):
             cont = True
             text = text[3:]
@@ -2044,8 +2047,9 @@ class Server:
             info('on_telegram_update_message %r', msg.to_dict())
             return
 
+        date = msg.date.replace(tzinfo=timezone.utc)
         sender.max_id = msg.id
-        record = {'id': msg.id, 'from': sender, 'to': to, 'message': msg.message}
+        record = {'id': msg.id, 'date': date, 'from': sender, 'to': to, 'message': msg.message, 'inferred': False}
         web.append_history(record)
         # UpdateShort{,Chat}Message do not have update.media
         # UpdateNewChannelMessage may have {media: None}
@@ -2085,9 +2089,9 @@ class Server:
             elif text is None:
                 text = '[{}] {}'.format(type(msg.media).__name__, msg.media.to_dict())
             if getattr(msg.media, 'caption', None):
-                text += ' ' + msg.media.caption
+                text += ' ' + msg.media.caption.replace('\n', '\\n')
             if msg.message:
-                text += ' ' + msg.message
+                text += ' ' + msg.message.replace('\n', '\\n')
         else:
             text = msg.message
 
@@ -2116,7 +2120,7 @@ class Server:
                         refer = None
                     else:
                         from1, to1 = self.resolve_from_to(message)
-                        refer = {'id': message.id, 'from': from1, 'to': to1, 'message': message.message}
+                        refer = {'id': message.id, 'date': message.date, 'from': from1, 'to': to1, 'message': message.message, 'inferred': True}
                         web.append_history(refer)
                 if refer is not None:
                     refer_text = refer['message'].replace('\n', '\\n')
@@ -2153,8 +2157,7 @@ class Server:
                     if 'draft/message-tags' in client.capabilities:
                         tags.append('draft/msgid={}'.format(msg_id))
                     if 'server-time' in client.capabilities:
-                        tags.append('time={}Z'.format(datetime.utcfromtimestamp(date.timestamp())
-                                                    .strftime('%FT%T.%f')[:23]))
+                        tags.append('time={}Z'.format(date.strftime('%FT%T.%f')[:23]))
                     if tags:
                         line = '@{} {}'.format(';'.join(tags), line)
                 client.write(line)
