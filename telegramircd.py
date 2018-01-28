@@ -4,6 +4,7 @@ from configargparse import ArgParser, Namespace
 from collections import deque
 from datetime import datetime, timezone
 from itertools import chain
+import subprocess
 
 from telethon import TelegramClient
 import telethon.tl as tl
@@ -76,7 +77,7 @@ class Web(object):
             media, filename = self.id2media[id]
             if not filename:
                 try:
-                    with tempfile.NamedTemporaryFile(dir=options.tg_media_dir, suffix='.jpg') as temp:
+                    with tempfile.NamedTemporaryFile(dir=options.tg_media_dir, suffix='.blob') as temp:
                         filename = temp.name
                     self.proc.download_media(media, filename)
                     self.id2media[id] = (media, filename)
@@ -85,8 +86,16 @@ class Web(object):
                 except TelegramCliFail as ex:
                     return aiohttp.web.Response(status=404, text=ex.args[0])
             with open(filename, 'rb') as f:
-                return aiohttp.web.Response(body=f.read(),
-                        headers={'Content-Type': mimetypes.guess_type(filename)[0]})
+                mime = None
+                if sys.platform == 'linux':
+                    try:
+                        mime = subprocess.check_output(['xdg-mime', 'query', 'filetype', filename],
+                                                       stdin=subprocess.DEVNULL).decode().strip()
+                    except:
+                        pass
+                if mime is None:
+                    mime = mimetypes.guess_type(filename)[0]
+                return aiohttp.web.Response(body=f.read(), headers={'Content-Type': mime})
         except Exception as ex:
             return aiohttp.web.Response(status=500, text=str(ex))
 
@@ -2075,10 +2084,10 @@ class Server:
                 web.id2media[media_id] = (msg.media, None)
             elif text is None:
                 text = '[{}] {}'.format(type(msg.media).__name__, msg.media.to_dict())
+            if getattr(msg.media, 'caption', None):
+                text += ' ' + msg.media.caption
             if msg.message:
                 text += ' ' + msg.message
-            if hasattr(msg.media, 'caption'):
-                text += ' ' + msg.media.caption
         else:
             text = msg.message
 
