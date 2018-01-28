@@ -256,7 +256,9 @@ class Web(object):
                 if isinstance(tg_room, (tl.types.Channel, tl.types.Chat)):
                     server.ensure_special_room(tg_room.id, tg_room)
             if not r.messages: break
-            last_date = min(msg.date for msg in r.messages)
+            date = min(msg.date for msg in r.messages)
+            if date == last_date: break
+            last_date = date
             time.sleep(0.7)
 
     def channel_message_get(self, channel, id):
@@ -2073,6 +2075,10 @@ class Server:
                 web.id2media[media_id] = (msg.media, None)
             elif text is None:
                 text = '[{}] {}'.format(type(msg.media).__name__, msg.media.to_dict())
+            if msg.message:
+                text += ' ' + msg.message
+            if hasattr(msg.media, 'caption'):
+                text += ' ' + msg.media.caption
         else:
             text = msg.message
 
