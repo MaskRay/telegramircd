@@ -113,7 +113,7 @@ class Web(object):
         if not self.authorized and not options.tg_phone:
             error('Not authorized. Please set --tg-phone')
             sys.exit(2)
-        self.proc.add_update_handler(server.on_telegram_update)
+        self.proc.add_event_handler(server.on_telegram_update)
 
     async def restart_telegram_cli(self):
         traceback.print_stack()
@@ -189,8 +189,10 @@ class Web(object):
     def channel_invite(self, client, channel, user):
         try:
             if channel.is_type(tl.types.PeerChannel):
-                # TODO
-                pass
+                self.proc(tl.functions.channels.InviteToChannelRequest(
+                    channel.peer.channel_id,
+                    [self.proc.get_input_entity(user.user_id)]
+                ))
             elif channel.is_type(tl.types.PeerChat):
                 self.proc(tl.functions.messages.AddChatUserRequest(
                     channel.peer.chat_id,
@@ -2016,7 +2018,6 @@ class Server:
             self.loop.run_until_complete(i.wait_closed())
 
     def resolve_from_to(self, msg):
-        from_ = server.ensure_special_user(msg.from_id, None)
         if isinstance(msg.to_id, tl.types.PeerUser):
             to = server.ensure_special_user(msg.to_id.user_id, None)
         elif isinstance(msg.to_id, tl.types.PeerChannel):
@@ -2025,6 +2026,14 @@ class Server:
             to = server.ensure_special_room(msg.to_id.chat_id, None)
         else:
             assert False
+        try:
+            from_ = server.ensure_special_user(msg.from_id, None)
+        except:
+            # Haven't seen the peer before. Retry.
+            if isinstance(msg.to_id, (tl.types.PeerChannel, tl.types.PeerChat)):
+                web.channel_members(to)
+            from_ = server.ensure_special_user(msg.from_id, None)
+
         return from_, to
 
     def is_type(self, _type):
@@ -2089,9 +2098,9 @@ class Server:
             elif text is None:
                 text = '[{}] {}'.format(type(msg.media).__name__, msg.media.to_dict())
             if getattr(msg.media, 'caption', None):
-                text += ' ' + msg.media.caption.replace('\n', '\\n')
+                text += ' | ' + msg.media.caption.replace('\n', '\\n')
             if msg.message:
-                text += ' ' + msg.message.replace('\n', '\\n')
+                text += ' | ' + msg.message.replace('\n', '\\n')
         else:
             text = msg.message
 
