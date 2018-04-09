@@ -8,6 +8,7 @@ telegramircd使用[Telethon](https://github.com/LonamiWebs/Telethon)和Telegram�
 
 - `git clone https://github.com/MaskRay/telegramircd && cd telegramircd`
 - python >= 3.5
+- libmagic
 - `pip3 install -r requirements.txt`
 
 创建一个Telegram App。

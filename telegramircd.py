@@ -14,7 +14,7 @@ import telethon.tl.types as tg_types
 import telethon.tl.functions.contacts
 import telethon.tl.functions.messages
 
-import aiohttp.web, asyncio, base64, inspect, json, logging.handlers, mimetypes, os, pprint, random, re, \
+import aiohttp.web, asyncio, base64, inspect, json, logging.handlers, magic, os, pprint, random, re, \
     shlex, signal, socket, ssl, string, sys, tempfile, time, traceback, uuid, weakref
 
 logger = logging.getLogger('telegramircd')
@@ -95,7 +95,7 @@ class Web(object):
                     except:
                         pass
                 if mime is None:
-                    mime = mimetypes.guess_type(filename)[0]
+                    mime = magic.from_file(filename, mime=True)
                 return aiohttp.web.Response(body=f.read(), headers={'Content-Type': mime})
         except Exception as ex:
             return aiohttp.web.Response(status=500, text=str(ex))
