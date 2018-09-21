@@ -105,8 +105,10 @@ class Web(object):
     def run_telethon(self):
         if self.proc:
             self.proc.disconnect()
-        self.proc = TelegramClient(options.tg_session, options.tg_api_id, options.tg_api_hash, update_workers=4)
-        if not self.proc.connect():
+        self.proc = TelegramClient(options.tg_session, options.tg_api_id, options.tg_api_hash)
+        try:
+            self.proc.connect()
+        except:
             error('Failed to connect to Telegram server')
             sys.exit(2)
         self.authorized = self.proc.is_user_authorized()
@@ -199,9 +201,9 @@ class Web(object):
                     self.proc.get_input_entity(user.user_id),
                     0,
                 ))
-        except telethon.errors.rpc_error_list.UserAlreadyParticipantError:
+        except telethon.errors.rpcerrorlist.UserAlreadyParticipantError:
             client.err_useronchannel(user.nick, channel.name)
-        except telethon.errors.rpc_base_errors.RPCError:
+        except telethon.errors.rpcbaseerrors.RPCError:
             pass
 
     async def channel_set_admin(self, client, channel, user, ty):
@@ -232,9 +234,9 @@ class Web(object):
                     channel.peer.chat_id,
                     self.proc.get_input_entity(user.user_id),
                 ))
-        except telethon.errors.rpc_error_list.UserNotParticipantError:
+        except telethon.errors.rpcerrorlist.UserNotParticipantError:
             client.err_usernotinchannel(user.nick, channel.name)
-        except telethon.errors.rpc_base_errors.RPCError:
+        except telethon.errors.rpcbaseerrors.RPCError:
             pass
 
     def chat_get_full(self, channel):
@@ -258,7 +260,8 @@ class Web(object):
                 offset_date=last_date,
                 offset_id=0,
                 offset_peer=tl.types.InputPeerEmpty(),
-                limit=chunk_size
+                limit=chunk_size,
+                hash=0
             ))
             for tg_user in r.users:
                 server.ensure_special_user(tg_user.id, tg_user)
@@ -314,7 +317,7 @@ class Web(object):
                     f.write(body)
                     f.flush()
                 self.proc.send_file(peer, f.name)
-            except telethon.errors.rpc_base_errors.RPCError:
+            except telethon.errors.rpcbaseerrors.RPCError:
                 client.err_cannotsendtochan(peer.nick, 'Cannot send the file')
             os.unlink(filename)
 
@@ -322,7 +325,7 @@ class Web(object):
         try:
             msg = self.proc.send_message(to.peer, text, reply_to=reply_to)
             irc_log(to, to, msg.date, client, msg.message)
-        except telethon.errors.rpc_base_errors.RPCError:
+        except telethon.errors.rpcbaseerrors.RPCError:
             traceback.print_exc()
             if isinstance(to.peer, SpecialChannel):
                 client.err_nosuchchannel(to.name)
