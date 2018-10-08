@@ -6,7 +6,7 @@ telegramircd使用[Telethon](https://github.com/LonamiWebs/Telethon)和Telegram�
 
 ## 安装
 
-- `git clone -b telethon https://github.com/MaskRay/telegramircd && cd telegramircd`
+- `git clone https://github.com/MaskRay/telegramircd && cd telegramircd`
 - python >= 3.5
 - `pip3 install -r requirements.txt`
 

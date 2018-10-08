@@ -4,11 +4,11 @@
 
 telegramircd is an IRC server that enables IRC clients to send and receive messages from Telegram.
 
-telegramircd uses [Telethon](https://github.com/LonamiWebs/Telethon) to communicate with Telegram servers.
+telegramircd uses [telethon-sync](https://github.com/LonamiWebs/Telethon) to communicate with Telegram servers.
 
 ## Installation
 
-- `git clone -b telethon https://github.com/MaskRay/telegramircd && cd telegramircd`
+- `git clone https://github.com/MaskRay/telegramircd && cd telegramircd`
 - python >= 3.5
 - `pip3 install -r requirements.txt`
 

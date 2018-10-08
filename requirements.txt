@@ -2,4 +2,4 @@ aiohttp
 ipdb
 ipython
 configargparse
-telethon
+telethon-sync
