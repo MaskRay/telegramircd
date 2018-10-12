@@ -7,6 +7,7 @@ from itertools import chain
 import subprocess
 
 from telethon import TelegramClient
+from telethon.errors import SessionPasswordNeededError
 import telethon.tl as tl
 #from telethon.tl.functions.contacts import GetContactsRequest
 import telethon.tl.types as tg_types
