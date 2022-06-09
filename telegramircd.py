@@ -5,6 +5,7 @@ from collections import deque
 from datetime import datetime, timezone
 from itertools import chain
 import subprocess
+from typing import Optional, Dict, Tuple, Any
 
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
@@ -20,8 +21,8 @@ import aiohttp.web, asyncio, base64, inspect, logging.handlers, magic, os, pprin
 logger = logging.getLogger('telegramircd')
 im_name = 'Telegram'
 capabilities = set(['away-notify', 'draft/message-tags', 'echo-message', 'multi-prefix', 'sasl', 'server-time'])  # http://ircv3.net/irc/
-options = None
-server = None
+options: Optional[Namespace] = None
+server: Optional["Server"] = None
 web = None
 
 
@@ -58,19 +59,20 @@ class TelegramCliFail(Exception):
 ### HTTP server
 
 class Web(object):
-    def __init__(self, tls):
+    def __init__(self, tls) -> None:
         global web
         web = self
         self.tls = tls
-        self.id2media = {}
-        self.id2message = {}
-        self.webpage_id2sender_to = {}
-        self.recent_messages = deque()
-        self.proc = None
+        self.id2media: Dict[str, Tuple[Any, Any]] = {}
+        self.id2message: Dict[str, str] = {}
+        self.webpage_id2sender_to: Dict[str, Tuple[Any, Any]] = {}
+        self.recent_messages:  deque[str] = deque()
+        self.proc: Optional[TelegramClient] = None
         self.authorized = False
         self.two_step = False
 
-    async def handle_media(self, typ, request):
+    async def handle_media(self, typ, request) -> aiohttp.web.Response:
+        assert options is not None and self.proc is not None
         id = re.sub(r'\..*', '', request.match_info.get('id'))
         if id not in self.id2media:
             return aiohttp.web.Response(status=404, text='Not Found')
@@ -100,10 +102,11 @@ class Web(object):
         except Exception as ex:
             return aiohttp.web.Response(status=500, text=str(ex))
 
-    async def handle_document(self, request):
+    async def handle_document(self, request) -> aiohttp.web.Response:
         return await self.handle_media('document', request)
 
-    async def run_telethon(self):
+    async def run_telethon(self) -> None:
+        assert options is not None and server is not None
         if self.proc:
             await self.proc.disconnect()
         self.proc = TelegramClient(options.tg_session, options.tg_api_id, options.tg_api_hash)
@@ -1153,11 +1156,12 @@ class SpecialChannel(Channel):
             for client in server.auth_clients():
                 client.reply('332 {} {} :{}', client.nick, self.name, self.topic)
 
-    async def update_admins(self, admins):
+    async def update_admins(self, admins) -> None:
+        assert server is not None
         seen_me = False
         seen = set()
         for admin in admins:
-            user = await server.ensure_special_user(admin)
+            user = await server.ensure_special_user(admin, None)
             if user == server:
                 seen_me = True
             elif user in self.members:
